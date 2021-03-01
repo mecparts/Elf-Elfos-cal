@@ -7,6 +7,8 @@
 ; ***
 ; *** Build 6: Changed highlighting from bold to reverse video.
 ; *** Build 7: Expanded year limits to 1582-9999.
+; *** Build 8: Send VT1802 style highlight/normal sequences when
+; ***          that video card is in use
 ; *******************************************************************
 ; *** This software is copyleft 2021 by Wayne Hortensius          ***
 ; *** All wrongs reserved.                                        ***
@@ -38,7 +40,7 @@ date:	db	80h+3		; Month: March
 	db	1		; Day 1
 	dw	2021		; year = 2021
 ;
-build:	dw	7		; build number
+build:	dw	8		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -316,8 +318,14 @@ Gt10:	glo	r9
 	sm
 	sex	r2
 	lbnz	NotToday1
-	call	f_inmsg
-	db	esc,'[7m',0	; hilight today
+	load	rf,ansi_hilite
+	ghi	re		; check to see if the VT1802
+	ani	0feh		; video card is active, and if
+	xri	0feh		; so, use a VT52 video hilite
+	lbnz	hilite_day
+	load	rf,vt52_hilite
+hilite_day:
+	call	O_MSG
 NotToday1:
 	glo	r9
 	plo	rd
@@ -335,8 +343,14 @@ NotToday1:
 	sm
 	sex	r2
 	lbnz	NotToday2
-	call	f_inmsg
-	db	esc,'[m',0	; end hilight of today
+	load	rf,ansi_normal
+	ghi	re		; check to see if the VT1802
+	ani	0feh		; video card is active, and if
+	xri	0feh		; so, use a VT52 video normal string
+	lbnz	normal_day
+	load	rf,vt52_normal
+normal_day:
+	call	O_MSG
 NotToday2:
 	inc	r9		; next day of month
 	dec	rc
@@ -347,6 +361,11 @@ NotToday2:
 	lbnz	WeekLoop
 	call	crlf
 	lbr	FullWeek
+;
+ansi_hilite:	db	esc,'[7m',0	; ANSI hilight today
+ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
+vt52_hilite:	db	esc,'P',0	; VT1802 hilight today
+vt52_normal:	db	esc,'@',0	; VT1802 end hilight of today
 ;------------------------
 crlf:	call	f_inmsg
 	db	cr,lf,0
