@@ -1,4 +1,4 @@
-# CAL
+# cal
 
 ## A Linux-style calendar utility for Mike Riley's Elf/OS.
 
