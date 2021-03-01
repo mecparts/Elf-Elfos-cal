@@ -1,0 +1,603 @@
+; -------------------------------------------------------------------
+; *** cal: displays a simple calendar in traditional format.
+; *** If arguments are not specified, the current month is displayed.
+; ***
+; *** Assembled with a modified version of the A18 assembler (includes
+; *** DC pseudo-op).
+; ***
+; *******************************************************************
+; *** This software is copyleft 2021 by Wayne Hortensius          ***
+; *** All wrongs reserved.                                        ***
+; *******************************************************************
+;
+	incl	"bios.inc"
+	incl	"kernel.inc"
+;
+; ************************************************************
+; This block generates the Execution header for a stand-alone
+; program. It begins 6 bytes before the program start.
+; ************************************************************
+;
+	org	02000h-6	; Header starts at 01ffah
+	dw	2000h
+	dw	endrom-2000h
+	dw	2000h
+;
+	br	Start
+; **************************************************
+; Build date format:
+; 80h+month, day, four digit year
+; **************************************************
+; 80h month offset indicates extended
+; build information, with build number and text.
+; **************************************************
+;
+date:	db	80h+2		; Month: February
+	db	28		; Day 28
+	dw	2021		; year = 2021
+;
+build:	dw	4		; build number
+	db	'@Copyleft 2021 Wayne Hortensius',0
+;
+cr	equ	13
+lf	equ	10
+tab	equ	9
+bell	equ	7
+esc	equ	27
+;
+Start:
+	lbr	Main
+Help:
+	call	O_INMSG
+	db	'Calendar, version 1.0',cr,lf
+	db	'  Syntax:',cr,lf
+	db	tab,'cal -h',tab,tab,'- Help',cr,lf,0
+;
+	load	rf,HasClock
+	ldn	rf
+	bz	Help2
+	call	O_INMSG
+	db	tab,'cal',tab,tab,'- Show current month',cr,lf,0
+Help2:
+	call	O_INMSG
+	db	tab,'cal month year',tab,'- Show specified month',cr,lf
+	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
+	db	tab,tab,'year',tab,'= 1-99 or 1766-2499',0
+Exit:
+	retn			; return to Elf/OS
+;-----------------------
+Main:
+	call	HasRTC
+	load	rf,HasClock
+	ldi	0		; D = 0x00 (doesn't have RTC)
+	lbnf	NoClk
+	smi	1		; D = 0xFF (has RTC)
+NoClk:	str	rf
+	load	rf,Day
+	ldi	0		; zero out day
+	str	rf		; (so no day hilited if command tail)
+	call	crlf
+SkipSpaces:
+	lda	ra		; skip over any spaces
+	smi	' '
+	lbz	SkipSpaces
+	dec	ra		; move back to non-space character
+	ldn	ra		; get byte
+	lbnz	DoTail		; there was a cmd tail, process it
+;
+	load	rf,HasClock
+	ldn	rf		; no cmd tail, get system time if we can
+	lbz	NoClkMsg	; no system clock to check, aww!
+;
+	load	rf,DateBlk	; point to kernel date/time
+	call	f_gettod	; call BIOS to get current date/time from RTC
+	lbnf	GotTime
+NoClkMsg:
+	call	O_INMSG
+	db	bell,'No RTC',cr,lf,lf,0
+	lbr	Help
+;
+GotTime:
+	load	rf,Year
+	ldn	rf		; convert offset year to absolute
+	adi	low 1972	; binary year
+	inc	rf
+	str	rf		; store low byte of absolute year
+	dec	rf
+	ldi	0
+	adci	high 1972
+	str	rf		; store high byte of absolute year
+	lbr	ShowCal		; show the current month calendar
+DoTail:
+	smi	'-'
+	ldn	ra
+	lbnz	DoTailX
+	inc	ra
+	ldn	ra
+	smi	'h'
+	ldn	ra
+	lbz	Help
+DoTailX:
+	call	f_isnum		; 1st non blank char: is it 0..9?
+	glo	ra
+	plo	rf
+	ghi	ra
+	phi	rf
+	lbnf	MonName		; nope, try a month name
+	call	f_atoi		; get month #
+	ldn	rf
+	smi	' '
+	lbnz	Help
+	ghi	rd
+	lbnz	Help		; out of range [1..12]
+	glo	rd
+	smi	12+1
+	lbdf	Help		; out of range [1..12]
+	lbr	DoYear
+MonName:
+	call	MatchMonthName
+	lbz	Help
+	plo	rd
+SkipRest:
+	lda	rf
+	call	f_isalpha
+	lbdf	SkipRest
+	dec	rf		; back up to first non alpha char
+DoYear:
+	load	ra,Month
+	glo	rd
+	str	ra		; save month #
+SkipYearSpaces:
+	lda	rf		; skip over any spaces
+	smi	' '
+	lbz	SkipYearSpaces
+	dec	rf		; move back to non-space character
+	ldn	rf
+	lbz	Help		; needed a year, we're done
+	call	f_isnum		; is it a digit?
+	lbnf	Help		; nope, we're done
+	call	f_atoi		; get year
+	ldn	rf		; end of command tail?
+	lbnz	Help		; jump if not
+	ghi	rd
+	lbnz	FullYear
+	glo	rd
+	lbz	Help		; year 0's no good
+DoYear1:
+	glo	rd
+	smi	100
+	lbdf	FullYear
+	glo	rd
+	adi	low 2000	; 2 digit years assumed 20xx
+	plo	rd
+	ldi	0
+	adci	high 2000
+	phi	rd
+FullYear:
+	load	rf,Year+1
+	glo	rd
+	str	rf
+	smi	low 1766	; ZCAL limited the calendar
+	dec	rf		; to 1766..2499, though I'm
+	ghi	rd		; not away of any such
+	str	rf		; limitation in Zeller's
+	smbi	high 1766	; congruence
+	lbnf	Help
+;
+	glo	rd
+	smi	low (2499+1)
+	ghi	rd
+	smbi	high (2499+1)
+	lbdf	Help
+;
+ShowCal:
+	ldi	' '
+	call	O_TYPE
+	load	rf,MonthNames
+	load	rd,DateBlk
+	ldn	rd		; month #
+	sdi	12		; D = 12-month #
+	call	prtTblStr	; print month name
+;	
+	load	rf,Year
+	lda	rf		; high byte of year
+	phi	rd
+	ldn	rf		; low byte of year
+	plo	rd
+	load	rf,buffer
+	call	f_uintout
+	ldi	0
+	str	rf
+	load	rf,buffer
+	call	O_MSG		; print year
+;
+	call	O_INMSG
+	db	cr,lf
+	db	' Sun Mon Tue Wed Thu Fri Sat'
+	db	cr,lf,0
+;
+	load	r7,DateBlk
+	call	GetDOW		; get the DOW of the 1st of the month
+	dec	r7		; r7 -> DOW1st
+	str	r7		; store DOW of 1st day of month
+	inc	r7		; r7 -> Month
+	glo	r7
+	plo	rf
+	ghi	r7
+	phi	rf
+	load	rd,Date2Blk
+	ldi	4
+	plo	rc
+	ldi	0
+	phi	rc
+	call	f_memcpy	; copy DateBlk to Date2Blk
+
+	dec	rd
+	dec	rd
+	dec	rd
+	dec	rd		; rd -> Date2Blk
+
+	ldn	rd
+	adi	1
+	str	rd		; store next month
+	smi	13
+	lbnz	NextMonth
+	ldi	1
+	str	rd
+	inc	rd
+	inc	rd		; rd -> high byte of year
+	lda	rd		; rf.1 = m(rd), rf.0 = m(rd+1)
+	phi	rf
+	ldn	rd
+	plo	rf
+	inc	rf		; rf = next year
+	glo	rf
+	str	rd
+	dec	rd
+	ghi	rf
+	str	rd
+	dec	rd
+	dec	rd		; rd -> Date2Blk
+NextMonth:
+	glo	rd
+	plo	r7
+	ghi	rd
+	phi	r7
+	call	GetDOW		; get the DOW of 1st of the next month
+	dec	r7
+	dec	r7
+	dec	r7
+	dec	r7
+	dec	r7		; r7 -> DOW1st
+	adi	7
+	sex	r7
+	sm
+	sex	r2
+DaysInMonth:
+	adi	7		; figure out how many days in the month
+	phi	rb		; (all months have at least 28 days)
+	smi	28
+	ghi	rb
+	lbnf	DaysInMonth
+	plo	rc		; rc = # of days in the month
+	ldi	1		; start with 1st day of month
+	plo	r9
+	ldn	r7		; fetch DOW1st
+	inc	r7
+	inc	r7		; r7 -> day of month
+	lbz	FullWeek	; month starts on Sunday, so full week
+	plo	ra
+	ldi	7
+	plo	rb		; # days remaining in first week
+MoveFirst:
+	call	O_INMSG		; space over to 1st of month
+	db	'    ',0
+	dec	rb
+	dec	ra
+	glo	ra
+	lbnz	MoveFirst
+	lbr	WeekLoop
+FullWeek:
+	ldi	7
+	plo	rb		; # of days in this week to print
+WeekLoop:
+	call	O_INMSG
+	db	'  ',0
+;
+	glo	r9		; day of month < 10 ?
+	smi	10
+	lbdf	Gt10
+	ldi	' '
+	call	O_TYPE		; yes, print a leading blank
+Gt10:	glo	r9
+	sex	r7
+	sm
+	sex	r2
+	lbnz	NotToday1
+	call	O_INMSG
+	db	esc,'[1m',0	; hilight today
+NotToday1:
+	glo	r9
+	plo	rd
+	ldi	0
+	phi	rd
+	load	rf,buffer
+	call	f_uintout
+	ldi	0
+	str	rf
+	load	rf,buffer
+	call	O_MSG		; print day of month
+
+	glo	r9
+	sex	r7
+	sm
+	sex	r2
+	lbnz	NotToday2
+	call	O_INMSG
+	db	esc,'[m',0	; end hilight of today
+NotToday2:
+	inc	r9		; next day of month
+	dec	rc
+	glo	rc
+	lbz	Exit
+	dec	rb
+	glo	rb
+	lbnz	WeekLoop
+	call	crlf
+	lbr	FullWeek
+;------------------------
+crlf:	call	O_INMSG
+	db	cr,lf,0
+	retn
+;------------------------
+;
+; Zeller's Congruence algorithm for determining
+;  the day of the week of the 1st of a month
+;
+; IN: r7   = address of date/time block m/d/yy
+; OUT D    = day of week (0-6, Sunday-Saturday)
+;
+; ALTERS r8,r9,ra,rb,rc,rd
+;
+GetDOW:	ldn	r7		; month
+	smi	3		; march - december?
+	inc	r7
+	inc	r7		; R7 -> high byte of year word
+	lda	r7
+	phi	rf
+	ldn	r7		; fetch low byte of year word
+	plo	rf
+	lbdf	GetDOW1		; DF=1 if month >= 3
+	dec	rf		; --year for january & february
+GetDOW1:
+	load	rd,100
+	call	f_div16		; RB=year DIV 100 (century), RF=year MOD 100
+	glo	rb
+	plo	ra		; save century
+	ldi	low 5
+	plo	rd
+	ldi	low 0
+	phi	rd
+	call	f_mul16		; RB = 5 * (year MOD 100)
+	ghi	rb
+	shr
+	phi	rb
+	glo	rb
+	shrc
+	plo	rb
+	ghi	rb
+	shr
+	phi	rb
+	glo	rb
+	shrc
+	plo	rb		; RB = 5 * (year mod 100) DIV 4
+
+	dec	r7		; R7 -> high byte of year word
+	dec	r7		; R7 -> day
+	dec	r7		; R7 -> month
+	ldi	low (valtab-1)
+	sex	r7
+	add
+	sex	r2
+	plo	rc
+	ldi	high (valtab-1)
+	adci	0
+	phi	rc		; index into valtab
+	glo	rb
+	sex	rc
+	add			; result = (13 * month - 1 ) DIV 5 + 5 * year MOD 100) DIV 4
+	sex	r2
+	str	r2		; save result
+	glo	ra
+	shr
+	shr			; century DIV 4
+	add			; result += century DIV 4
+	str	r2
+	glo	ra
+	shl			; century * 2
+	sd			; D = century * 2 - result
+	str	r2
+	lbdf	GetDOW3		; branch if result >= 0
+GetDOW2:
+	adi	7
+	lbnf	GetDOW2		; loop until result >= 0
+GetDOW3:
+	smi	7		; do MOD 7
+	lbdf	GetDOW3		; loop until result < 0
+	adi	7		; MOD 7 done
+	retn
+;
+;	Precomputed (13 * month) DIV 5 values
+;
+valtab:	db	29,32,3,6,8,11,13,16,19,21,24,26
+;------------------------
+;
+;  MatchMonthName: find a unique prefix match for a NUL terminated string
+;	   in a table of strings
+;  IN: rf -> space terminated string to match
+;  OUT: D -> 1 based string index (0 if not found)
+;
+;  ALTERS: r7, r8, r9, ra, rb, rc, rd
+;
+MatchMonthName:
+	load	rd,MonthNames
+	ldi	0
+	plo	r7		; R7 is longest substring matched so far
+	plo	r8		; R8 is match # (0 means no match)
+	ldi	12		; # month names to search
+	plo	rb		; RB is loop counter
+MonthLoop:
+	glo	rf
+	plo	r9
+	ghi	rf
+	phi	r9		; r9 is working cmd tail ptr
+	ldi	0ffh
+	plo	rc		; rc is working matched substring length 
+ChkNextChr:
+	inc	rd		; next byte in table
+	inc	rc		; # chars matched
+	ldn	r9		; char from cmd tail
+	smi	'a'
+	lda	r9
+	lbnf	NotLower
+	ani	not 20h		; make upper case
+NotLower:
+	sex	rd
+	xor			; compare to month char
+	ani	not 20h		; make it case insensitive
+	sex	r2
+	lbz	ChkNextChr
+	xri	80h
+	lbnz	FindEoS		; jump if wasn't last char in table entry
+	inc	rc		; matched a complete table entry
+	ldn	r9
+	smi	' '
+	lbnz	FindEoS		; end of month name?
+	glo	rb		; complete cmd tail string matched
+	retn
+FindEoS:
+	lda	rd
+	shl
+	lbnf	FindEoS		; find end of string (hi bit set)
+	dec	rd
+	dec	r9
+	ldn	r9		; did we get to the end of the 
+	smi	' '		; cmd tail word?
+	lbnz	DoNextMonth
+
+	glo	rc		; substr length
+	dec	r2
+	str	r2		; store it for a moment
+	glo	r7
+	sd			; is substr lng < longest substr lng?
+	inc	r2		; forget about stored length
+	lbnf	DoNextMonth
+	dec	r2
+	str	r2
+	ldi	0
+	plo	r8		; no month name matched
+	lda	r2
+	lbz	DoNextMonth
+	glo	rb
+	plo	r8		; save month name index matched
+	glo	rc
+	plo	r7		; save longest length matched
+DoNextMonth:
+	dec	rb
+	glo	rb
+	lbnz	MonthLoop
+	glo	r8
+	retn
+;------------------------
+MonthNames:
+	db	12
+	dc	'December'
+	dc	'November'
+	dc	'October'
+	dc	'September'
+	dc	'August'
+	dc	'July'
+	dc	'June'
+	dc	'May'
+	dc	'April'
+	dc	'March'
+	dc	'February'
+	dc	'January'
+	db	0ffh
+;------------------------
+; prtTblStr: print n'th string in a table (end of string marked with hi bit set)
+; IN: D = string number (0..N-1)
+;    RF = table (N strings with last char MSb set)
+;               (table terminated by 0FFH)
+;
+prtTblStr:
+	plo	rd
+	sex	rf
+	sm				; exceeds # of strings in table?
+	sex	r2
+	lbnf	prtts1	
+	retn				; yep, we are done
+prtts1:	
+	glo	rd
+	lbz	FirstStr
+NextStr:
+	inc	rf
+	ldn	rf
+	ani	80h
+	lbz	NextStr			; not end of this string
+	dec	rd
+	glo	rd
+	lbnz	NextStr			; got to the string we want yet?
+FirstStr:
+	ldi	23			; total spaces
+	plo	rd
+StrLoop:
+	inc	rf
+	ldn	rf
+	ani	7fh			; mask off hi bit
+	call	O_TYPE
+	dec	rd			; decr # spaces required
+	ldn	rf
+	shl				; put msb in DF
+	lbnf	StrLoop			; loop until last char (hi bit set)
+StrSpaces:
+	ldi	' '			; fill out to 23 chars with spaces
+	call	O_TYPE
+	dec	rd
+	glo	rd
+	lbnz	StrSpaces
+	retn
+;------------------------
+HasRTC:	load	rf,f_settod		; see if extended BIOS is available
+	lda	rf			; get byte from set date call
+	smi	0C0h			; must be LBR
+	lbnz	NoRTC			; jump if not
+	ldn	rf			; retrieve second byte
+	ani	0f0h			; keep only high nybble
+	smi	0f0h			; must be in BIOS space
+	lbnz	NoRTC
+	smbi	0			; signal RTC present
+	retn				; and return
+NoRTC:	adi	0			; clear DF
+	retn				; and return
+;------------------------
+;	
+endrom	equ	$
+;
+;------------------------
+;
+HasClock ds	1
+;
+DOW1st	ds	1			;\
+DateBlk:				; \
+Month	ds	1			;  \
+Day	ds	1			; NB: these variables must
+Year	ds	2			; remain together in this
+Date2Blk:				; order!
+Month2	ds	1			;  /
+Day2	ds	1			; /
+Year2	ds	2			;/
+;
+buffer	equ	$
+;
+	end
