@@ -32,11 +32,11 @@
 ; build information, with build number and text.
 ; **************************************************
 ;
-date:	db	80h+2		; Month: February
-	db	28		; Day 28
+date:	db	80h+3		; Month: March
+	db	1		; Day 1
 	dw	2021		; year = 2021
 ;
-build:	dw	4		; build number
+build:	dw	5		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -315,7 +315,7 @@ Gt10:	glo	r9
 	sex	r2
 	lbnz	NotToday1
 	call	O_INMSG
-	db	esc,'[1m',0	; hilight today
+	db	esc,'[7m',0	; hilight today
 NotToday1:
 	glo	r9
 	plo	rd
