@@ -16,7 +16,7 @@ hilited. (The hiliting assumes a VT100/ANSI style terminal.)
      14  15  16  17  18  19  20
      21  22  23  24  25  <b>26</b>  27
      28
-    $</code>
+   $</code>
 </pre>	
 
 Even without an RTC, you can use cal to display a calendar of any month
