@@ -4,7 +4,7 @@
 
 If your Elf system includes an RTC, typing `cal` on the command line
 will show a calendar of the current month, with the current date
-hilited. (The hiliting assumes a VT100/ANSI style terminal.)
+highlighted. (The highlighting assumes a VT100/ANSI style terminal.)
 
 <pre>
 <code>   $ cal
