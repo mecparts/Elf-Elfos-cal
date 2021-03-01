@@ -5,6 +5,8 @@
 ; *** Assembled with a modified version of the A18 assembler (includes
 ; *** DC pseudo-op).
 ; ***
+; *** Build 6: Changed highlighting from bold to reverse video.
+; *** Build 7: Expanded year limits to 1582-9999.
 ; *******************************************************************
 ; *** This software is copyleft 2021 by Wayne Hortensius          ***
 ; *** All wrongs reserved.                                        ***
@@ -36,7 +38,7 @@ date:	db	80h+3		; Month: March
 	db	1		; Day 1
 	dw	2021		; year = 2021
 ;
-build:	dw	6		; build number
+build:	dw	7		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -62,7 +64,7 @@ Help2:
 	call	f_inmsg
 	db	tab,'cal month year',tab,'- Show specified month',cr,lf
 	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
-	db	tab,tab,'year',tab,'= 1-99 or 1766-2499',0
+	db	tab,tab,'year',tab,'= 1-99 or 1582-9999',0
 Exit:
 	retn			; return to Elf/OS
 ;-----------------------
@@ -177,17 +179,17 @@ FullYear:
 	load	rf,Year+1
 	glo	rd
 	str	rf
-	smi	low 1766	; ZCAL limited the calendar
+	smi	low 1582	; ZCAL limited the calendar
 	dec	rf		; to 1766..2499, though I'm
 	ghi	rd		; not away of any such
 	str	rf		; limitation in Zeller's
-	smbi	high 1766	; congruence
+	smbi	high 1582	; congruence
 	lbnf	Help
 ;
 	glo	rd
-	smi	low (2499+1)
+	smi	low (9999+1)
 	ghi	rd
-	smbi	high (2499+1)
+	smbi	high (9999+1)
 	lbdf	Help
 ;
 ShowCal:
