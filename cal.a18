@@ -36,7 +36,7 @@ date:	db	80h+3		; Month: March
 	db	1		; Day 1
 	dw	2021		; year = 2021
 ;
-build:	dw	5		; build number
+build:	dw	6		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -48,7 +48,7 @@ esc	equ	27
 Start:
 	lbr	Main
 Help:
-	call	O_INMSG
+	call	f_inmsg
 	db	'Calendar, version 1.0',cr,lf
 	db	'  Syntax:',cr,lf
 	db	tab,'cal -h',tab,tab,'- Help',cr,lf,0
@@ -56,10 +56,10 @@ Help:
 	load	rf,HasClock
 	ldn	rf
 	bz	Help2
-	call	O_INMSG
+	call	f_inmsg
 	db	tab,'cal',tab,tab,'- Show current month',cr,lf,0
 Help2:
-	call	O_INMSG
+	call	f_inmsg
 	db	tab,'cal month year',tab,'- Show specified month',cr,lf
 	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
 	db	tab,tab,'year',tab,'= 1-99 or 1766-2499',0
@@ -93,7 +93,7 @@ SkipSpaces:
 	call	f_gettod	; call BIOS to get current date/time from RTC
 	lbnf	GotTime
 NoClkMsg:
-	call	O_INMSG
+	call	f_inmsg
 	db	bell,'No RTC',cr,lf,lf,0
 	lbr	Help
 ;
@@ -211,7 +211,7 @@ ShowCal:
 	load	rf,buffer
 	call	O_MSG		; print year
 ;
-	call	O_INMSG
+	call	f_inmsg
 	db	cr,lf
 	db	' Sun Mon Tue Wed Thu Fri Sat'
 	db	cr,lf,0
@@ -290,7 +290,7 @@ DaysInMonth:
 	ldi	7
 	plo	rb		; # days remaining in first week
 MoveFirst:
-	call	O_INMSG		; space over to 1st of month
+	call	f_inmsg		; space over to 1st of month
 	db	'    ',0
 	dec	rb
 	dec	ra
@@ -301,7 +301,7 @@ FullWeek:
 	ldi	7
 	plo	rb		; # of days in this week to print
 WeekLoop:
-	call	O_INMSG
+	call	f_inmsg
 	db	'  ',0
 ;
 	glo	r9		; day of month < 10 ?
@@ -314,7 +314,7 @@ Gt10:	glo	r9
 	sm
 	sex	r2
 	lbnz	NotToday1
-	call	O_INMSG
+	call	f_inmsg
 	db	esc,'[7m',0	; hilight today
 NotToday1:
 	glo	r9
@@ -333,7 +333,7 @@ NotToday1:
 	sm
 	sex	r2
 	lbnz	NotToday2
-	call	O_INMSG
+	call	f_inmsg
 	db	esc,'[m',0	; end hilight of today
 NotToday2:
 	inc	r9		; next day of month
@@ -346,7 +346,7 @@ NotToday2:
 	call	crlf
 	lbr	FullWeek
 ;------------------------
-crlf:	call	O_INMSG
+crlf:	call	f_inmsg
 	db	cr,lf,0
 	retn
 ;------------------------
