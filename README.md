@@ -6,9 +6,10 @@ If your Elf system includes an RTC, typing `cal` on the command line
 will show a calendar of the current month, with the current date
 hilited. (The hiliting assumes a VT100/ANSI style terminal.)
 
-```
+<pre>
+<code>
    $ cal
-    
+   
     February               2021
     Sun Mon Tue Wed Thu Fri Sat
           1   2   3   4   5   6
@@ -16,8 +17,8 @@ hilited. (The hiliting assumes a VT100/ANSI style terminal.)
      14  15  16  17  18  19  20
      21  22  23  24  25  26  27
      <b>28</b>
-   $ 
-```
+</code>
+</pre>	
 
 Even without an RTC, you can use cal to display a calendar of any month
 between the year 1766 and 2499 by typing commands such as:
