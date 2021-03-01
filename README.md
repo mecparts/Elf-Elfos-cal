@@ -7,8 +7,7 @@ will show a calendar of the current month, with the current date
 hilited. (The hiliting assumes a VT100/ANSI style terminal.)
 
 <pre>
-<code>
-   $ cal
+<code>   $ cal
    
     February               2021
     Sun Mon Tue Wed Thu Fri Sat
@@ -16,8 +15,7 @@ hilited. (The hiliting assumes a VT100/ANSI style terminal.)
       7   8   9  10  11  12  13
      14  15  16  17  18  19  20
      21  22  23  24  25  26  27
-     <b>28</b>
-</code>
+     <b>28</b></code>
 </pre>	
 
 Even without an RTC, you can use cal to display a calendar of any month
