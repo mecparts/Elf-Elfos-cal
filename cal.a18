@@ -9,6 +9,7 @@
 ; *** Build 7: Expanded year limits to 1582-9999.
 ; *** Build 8: Send VT1802 style highlight/normal sequences when
 ; ***          that video card is in use
+; *** Build 9: Didn't read the VT1802 doc closely enough; 2nd try.
 ; *******************************************************************
 ; *** This software is copyleft 2021 by Wayne Hortensius          ***
 ; *** All wrongs reserved.                                        ***
@@ -40,7 +41,7 @@ date:	db	80h+3		; Month: March
 	db	1		; Day 1
 	dw	2021		; year = 2021
 ;
-build:	dw	8		; build number
+build:	dw	9		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -48,6 +49,7 @@ lf	equ	10
 tab	equ	9
 bell	equ	7
 esc	equ	27
+bs	equ	8
 ;
 Start:
 	lbr	Main
@@ -364,8 +366,8 @@ NotToday2:
 ;
 ansi_hilite:	db	esc,'[7m',0	; ANSI hilight today
 ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
-vt52_hilite:	db	esc,'P',0	; VT1802 hilight today
-vt52_normal:	db	esc,'@',0	; VT1802 end hilight of today
+vt52_hilite:	db	bs,esc,'NP',0	; VT1802 hilight today
+vt52_normal:	db	esc,'N@',bs,0	; VT1802 end hilight of today
 ;------------------------
 crlf:	call	f_inmsg
 	db	cr,lf,0
