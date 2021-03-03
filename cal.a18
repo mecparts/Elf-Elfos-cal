@@ -5,11 +5,15 @@
 ; *** Assembled with a modified version of the A18 assembler (includes
 ; *** DC pseudo-op).
 ; ***
-; *** Build 6: Changed highlighting from bold to reverse video.
-; *** Build 7: Expanded year limits to 1582-9999.
-; *** Build 8: Send VT1802 style highlight/normal sequences when
-; ***          that video card is in use
-; *** Build 9: Didn't read the VT1802 doc closely enough; 2nd try.
+; *** Build #
+; ***  6: Changed highlighting from bold to reverse video.
+; ***  7: Expanded year limits to 1582-9999.
+; ***  8: Send VT1802 style highlight/normal sequences when
+; ***     that video card is in use
+; ***  9: Didn't read the VT1802 doc closely enough; 2nd try.
+; *** 10: Thought about VT1802 some more, came up with something more
+; ***     likely to work. (Such are the perils of writing code for h/w
+; ***     you don't have to test on!)
 ; *******************************************************************
 ; *** This software is copyleft 2021 by Wayne Hortensius          ***
 ; *** All wrongs reserved.                                        ***
@@ -38,10 +42,10 @@
 ; **************************************************
 ;
 date:	db	80h+3		; Month: March
-	db	1		; Day 1
+	db	3		; Day 3
 	dw	2021		; year = 2021
 ;
-build:	dw	9		; build number
+build:	dw	10		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -288,6 +292,8 @@ DaysInMonth:
 	plo	rc		; rc = # of days in the month
 	ldi	1		; start with 1st day of month
 	plo	r9
+	ldi	0
+	plo	r8		; reset "VT1802 esc seq used space" flag
 	ldn	r7		; fetch DOW1st
 	inc	r7
 	inc	r7		; r7 -> day of month
@@ -307,15 +313,17 @@ FullWeek:
 	ldi	7
 	plo	rb		; # of days in this week to print
 WeekLoop:
-	call	f_inmsg
-	db	'  ',0
-;
-	glo	r9		; day of month < 10 ?
-	smi	10
-	lbdf	Gt10
+	glo	r8		; only print 1 leading space after
+	lbnz	LeadingSpace	; highlighting the current day on the
+	ldi	' '		; VT1802 board (reverse/normal video
+	call	O_TYPE		; occupies a character spot afaict)
+LeadingSpace:
 	ldi	' '
-	call	O_TYPE		; yes, print a leading blank
-Gt10:	glo	r9
+	call	O_TYPE
+	ldi	0		; reset VT1802 flag
+	plo	r8
+;
+	glo	r9
 	sex	r7
 	sm
 	sex	r2
@@ -329,7 +337,12 @@ Gt10:	glo	r9
 hilite_day:
 	call	O_MSG
 NotToday1:
-	glo	r9
+	glo	r9		; day of month < 10 ?
+	smi	10
+	lbdf	Gt10
+	ldi	' '
+	call	O_TYPE		; yes, print a leading blank
+Gt10:	glo	r9
 	plo	rd
 	ldi	0
 	phi	rd
@@ -350,6 +363,8 @@ NotToday1:
 	ani	0feh		; video card is active, and if
 	xri	0feh		; so, use a VT52 video normal string
 	lbnz	normal_day
+	ldi	1		; set "only one space" flag after VT1802
+	plo	r8		; escape sequence
 	load	rf,vt52_normal
 normal_day:
 	call	O_MSG
@@ -367,7 +382,7 @@ NotToday2:
 ansi_hilite:	db	esc,'[7m',0	; ANSI hilight today
 ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
 vt52_hilite:	db	bs,esc,'NP',0	; VT1802 hilight today
-vt52_normal:	db	esc,'N@',bs,0	; VT1802 end hilight of today
+vt52_normal:	db	esc,'N@',0	; VT1802 end hilight of today
 ;------------------------
 crlf:	call	f_inmsg
 	db	cr,lf,0
@@ -509,18 +524,15 @@ FindEoS:
 	lbnz	DoNextMonth
 
 	glo	rc		; substr length
-	dec	r2
 	str	r2		; store it for a moment
 	glo	r7
-	sd			; is substr lng < longest substr lng?
-	inc	r2		; forget about stored length
-	lbnf	DoNextMonth
-	dec	r2
+	sd
+	lbnf	DoNextMonth	; jump if substr lng < longest substr lng
 	str	r2
 	ldi	0
 	plo	r8		; no month name matched
-	lda	r2
-	lbz	DoNextMonth
+	ldn	r2
+	lbz	DoNextMonth	; jump if substr lng = longest substr lng
 	glo	rb
 	plo	r8		; save month name index matched
 	glo	rc
