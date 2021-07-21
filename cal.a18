@@ -41,11 +41,11 @@
 ; build information, with build number and text.
 ; **************************************************
 ;
-date:	db	80h+3		; Month: March
-	db	3		; Day 3
+date:	db	80h+7		; Month: July
+	db	21		; Day 21
 	dw	2021		; year = 2021
 ;
-build:	dw	10		; build number
+build:	dw	11		; build number
 	db	'@Copyleft 2021 Wayne Hortensius',0
 ;
 cr	equ	13
@@ -74,9 +74,22 @@ Help2:
 	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
 	db	tab,tab,'year',tab,'= 1-99 or 1582-9999',0
 Exit:
+	load	rf,saveStack	; restore Elf/OS's stack
+	lda	rf
+	phi	r2
+	ldn	rf
+	plo	r2
 	retn			; return to Elf/OS
 ;-----------------------
 Main:
+	load	rf,saveStack	; save Elf/OS's stack
+	ghi	r2
+	str	rf
+	inc	rf
+	glo	r2
+	str	rf
+	load	r2,localStack	; use our own stack
+	
 	call	HasRTC
 	load	rf,HasClock
 	ldi	0		; D = 0x00 (doesn't have RTC)
@@ -603,15 +616,11 @@ StrSpaces:
 	lbnz	StrSpaces
 	retn
 ;------------------------
-HasRTC:	load	rf,f_settod		; see if extended BIOS is available
-	lda	rf			; get byte from set date call
-	smi	0C0h			; must be LBR
-	lbnz	NoRTC			; jump if not
-	ldn	rf			; retrieve second byte
-	ani	0f0h			; keep only high nybble
-	smi	0f0h			; must be in BIOS space
-	lbnz	NoRTC
-	smbi	0			; signal RTC present
+HasRTC:	call	f_getdev		; check that the BIOS thinks
+	glo	rf
+	ani	b_devRTC		; we have an RTC
+	bz	NoRTC
+	smbi	0			; signal RTC present (DF=1)
 	retn				; and return
 NoRTC:	adi	0			; clear DF
 	retn				; and return
@@ -632,6 +641,12 @@ Date2Blk:				; order!
 Month2	ds	1			;  /
 Day2	ds	1			; /
 Year2	ds	2			;/
+;
+	ds	64
+localStack:
+	ds	1
+saveStack:
+	ds	2
 ;
 buffer	equ	$
 ;
