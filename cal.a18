@@ -14,6 +14,10 @@
 ; *** 10: Thought about VT1802 some more, came up with something more
 ; ***     likely to work. (Such are the perils of writing code for h/w
 ; ***     you don't have to test on!)
+; ***	  Use local stack and f_getdev
+; *** 12: Use Elf/OS for terminal output (I remember changing this
+; ***     TO the kernel calls for older Elf/OS support...)
+; ***     Use interrupt proof stack maniuplation
 ; *******************************************************************
 ; *** This software is copyleft 2021 by Wayne Hortensius          ***
 ; *** All wrongs reserved.                                        ***
@@ -41,12 +45,10 @@
 ; build information, with build number and text.
 ; **************************************************
 ;
-date:	db	80h+7		; Month: July
-	db	21		; Day 21
-	dw	2021		; year = 2021
+date:	date
 ;
-build:	dw	11		; build number
-	db	'@Copyleft 2021 Wayne Hortensius',0
+build:	dw	12		; build number
+	db	'use Elf/OS calls for terminal output',0
 ;
 cr	equ	13
 lf	equ	10
@@ -58,7 +60,7 @@ bs	equ	8
 Start:
 	lbr	Main
 Help:
-	call	f_inmsg
+	call	O_INMSG
 	db	'Calendar, version 1.0',cr,lf
 	db	'  Syntax:',cr,lf
 	db	tab,'cal -h',tab,tab,'- Help',cr,lf,0
@@ -66,22 +68,47 @@ Help:
 	load	rf,HasClock
 	ldn	rf
 	bz	Help2
-	call	f_inmsg
+	call	O_INMSG
 	db	tab,'cal',tab,tab,'- Show current month',cr,lf,0
 Help2:
-	call	f_inmsg
+	call	O_INMSG
 	db	tab,'cal month year',tab,'- Show specified month',cr,lf
 	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
 	db	tab,tab,'year',tab,'= 1-99 or 1582-9999',0
 Exit:
+	ldi     1		; assume interrupts are enabled
+	lsie			; skip if they are
+	ldi	0		; mark interrupts disabled
+	plo	re		; save IE flag
+	ldi	023h		; setup for DIS (X=2, P=3)
+	str	r2
+	dis			; disable interrupts
+	dec	r2
 	load	rf,saveStack	; restore Elf/OS's stack
 	lda	rf
 	phi	r2
 	ldn	rf
 	plo	r2
+	glo	re		; recover IE flag
+	lbz	Exit2		; jump if interrupts were disabled
+	ldi	023h		; setup for RET (X=2, P=3)
+	str	r2
+	ret			; re-enable interrupts
+	dec	r2
+Exit2:
+	pop	r6		; restore Elf/OS's return address
 	retn			; return to Elf/OS
 ;-----------------------
 Main:
+	push	r6		; save Elf/OS's return address on its stack
+	ldi     1		; assume interrupts are enabled
+	lsie			; skip if they are
+	ldi	0		; mark interrupts disabled
+	plo	re		; save IE flag
+	ldi	023h		; setup for DIS (X=2, P=3)
+	str	r2
+	dis			; disable interrupts
+	dec	r2
 	load	rf,saveStack	; save Elf/OS's stack
 	ghi	r2
 	str	rf
@@ -89,7 +116,13 @@ Main:
 	glo	r2
 	str	rf
 	load	r2,localStack	; use our own stack
-	
+	glo	re		; recover IE flag
+	lbz	Main2		; jump if interrupts were disabled
+	ldi	023h		; setup for RET (X=2, P=3)
+	str	r2
+	ret			; re-enable interrupts
+	dec	r2
+Main2:
 	call	HasRTC
 	load	rf,HasClock
 	ldi	0		; D = 0x00 (doesn't have RTC)
@@ -113,10 +146,10 @@ SkipSpaces:
 	lbz	NoClkMsg	; no system clock to check, aww!
 ;
 	load	rf,DateBlk	; point to kernel date/time
-	call	f_gettod	; call BIOS to get current date/time from RTC
+	call	O_GETTOD	; call BIOS to get current date/time from RTC
 	lbnf	GotTime
 NoClkMsg:
-	call	f_inmsg
+	call	O_INMSG
 	db	bell,'No RTC',cr,lf,lf,0
 	lbr	Help
 ;
@@ -234,7 +267,7 @@ ShowCal:
 	load	rf,buffer
 	call	O_MSG		; print year
 ;
-	call	f_inmsg
+	call	O_INMSG
 	db	cr,lf
 	db	' Sun Mon Tue Wed Thu Fri Sat'
 	db	cr,lf,0
@@ -315,7 +348,7 @@ DaysInMonth:
 	ldi	7
 	plo	rb		; # days remaining in first week
 MoveFirst:
-	call	f_inmsg		; space over to 1st of month
+	call	O_INMSG		; space over to 1st of month
 	db	'    ',0
 	dec	rb
 	dec	ra
@@ -397,7 +430,7 @@ ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
 vt52_hilite:	db	bs,esc,'NP',0	; VT1802 hilight today
 vt52_normal:	db	esc,'N@',0	; VT1802 end hilight of today
 ;------------------------
-crlf:	call	f_inmsg
+crlf:	call	O_INMSG
 	db	cr,lf,0
 	retn
 ;------------------------
@@ -626,28 +659,26 @@ NoRTC:	adi	0			; clear DF
 	retn				; and return
 ;------------------------
 ;	
+HasClock:	 ds	1
+;
+DOW1st:		ds	1		;\.
+DateBlk:				; \.
+Month:		ds	1		;  \.
+Day:		ds	1		; NB: these variables must
+Year:		ds	2		; remain together in this
+Date2Blk:				; order!
+Month2:		ds	1		;  /.
+Day2:		ds	1		; /.
+Year2:		ds	2		;/.
+;
+		ds	64
+localStack:	ds	1
+saveStack:	ds	2
+;
+buffer:		ds	80
+;
 endrom	equ	$
 ;
 ;------------------------
-;
-HasClock ds	1
-;
-DOW1st	ds	1			;\
-DateBlk:				; \
-Month	ds	1			;  \
-Day	ds	1			; NB: these variables must
-Year	ds	2			; remain together in this
-Date2Blk:				; order!
-Month2	ds	1			;  /
-Day2	ds	1			; /
-Year2	ds	2			;/
-;
-	ds	64
-localStack:
-	ds	1
-saveStack:
-	ds	2
-;
-buffer	equ	$
 ;
 	end

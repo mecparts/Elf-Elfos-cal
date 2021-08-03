@@ -34,11 +34,3 @@ will get you January. `f` will retun February. `ju` won't work, but
 
 Two digit year numbers between 01 and 99 are interpreted as 2001 to 
 2099.
-
-The source was assembled with a modified version of the A18 assembler.
-(I like being able to use `dc` to define strings with the most
-significant bit of the last character set.) The header files `bios.inc`
-and `kernel.inc` are slightly modified versions of Mike Riley's files;
-the `#ifdef...#endif` bits have been removed or unconditionally
-included as appropriate, `#define`s changed to `equ`, and upper/lower
-casing was made consistent.

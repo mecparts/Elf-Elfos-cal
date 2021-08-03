@@ -14,6 +14,10 @@
                         ; *** 10: Thought about VT1802 some more, came up with something more
                         ; ***     likely to work. (Such are the perils of writing code for h/w
                         ; ***     you don't have to test on!)
+                        ; ***	  Use local stack and f_getdev
+                        ; *** 12: Use Elf/OS for terminal output (I remember changing this
+                        ; ***     TO the kernel calls for older Elf/OS support...)
+                        ; ***     Use interrupt proof stack maniuplation
                         ; *******************************************************************
                         ; *** This software is copyleft 2021 by Wayne Hortensius          ***
                         ; *** All wrongs reserved.                                        ***
@@ -36,6 +40,7 @@
                         b_devUART	equ	00001000b	; UART
                         b_devRTC	equ	00010000b	; RTC
                         b_devNVR	equ	00100000b	; NVRAM
+                        b_devNBREAD	equ	00000001b	; NBREAD supported
                         
                         #ifndef _IS_BIOS
                         
@@ -92,6 +97,7 @@
                         f_idnum		equ	(BIOS+7bh)	; determine type of ascii number
                         f_isterm	equ	(BIOS+7eh)	; determine if D is a termination char
                         f_getdev	equ	(BIOS+81h)	; get supported devices
+                        f_nbread	equ	(BIOS+84);	; read 1 char from console (non blocking)
                         
                         f_version	equ	(BIOS+0f9h)	; 3 bytes holding bios version number
                         
@@ -120,6 +126,25 @@
                         #endif
                         
                         	incl	"kernel.inc"
+                        O_CREAT	equ	00000001b
+                        O_TRUNC	equ	00000010b
+                        O_APPND	equ	00000100b
+                        ;
+                        errexists	   equ	1
+                        errnoffnd	   equ	2
+                        errinvdir	   equ	3
+                        errisdir	      equ	4
+                        errdirnotempty	equ	5
+                        errnotexec	   equ	6
+                        ;
+                        ff_dir		   equ	00000001b
+                        ff_exec		   equ	00000010b
+                        ff_write	      equ	00000100b
+                        ff_hide		   equ	00001000b
+                        ff_archive	   equ	00010000b
+                        
+                        #ifndef _IS_KERNEL
+                        
                         O_CLDBOOT: equ     0300h               ; jump to cold boot routine
                         O_WRMBOOT: equ     0303h               ; jump to warm boot routine
                         O_OPEN:    equ     0306h               ; open a file
@@ -151,14 +176,17 @@
                         O_SETTOD:  equ     0354h               ; passthrough to f_settod
                         O_INPUTL:  equ     0357h               ; passthrough to f_inputl
                         O_BOOT:    equ     035ah               ; passthrough to f_boot
-                        O_TTY:     equ     035dh               ; passthrough to f_tty
                         O_SETBD:   equ     0360h               ; passthrough to f_setbd
                         O_INITCALL: equ    0363h               ; passthrough to f_initcall
                         O_BRKTEST: equ     0366h               ; passthrough to f_brktest
-                        O_DEVCTRL: equ     0369h               ; passthrough to deverr
+                        O_DEVCTRL: equ     0369h               ; Hook for device control drivers
                         O_ALLOC:   equ     036ch               ; passthrough to alloc
                         O_DEALLOC: equ     036fh               ; passthrough to dealloc
+                        O_TERMCTRL: equ    0372h               ; Hook for terminal control drivers
+                        O_MEMCTRL: equ     0375h               ; Hook for memory control drivers
+                        ;
                         I_SERVE:   equ     03f6h               ; address of interrupt chain head
+                        ;
                         V_IVEC:    equ     03fdh               ; interrupt head
                         V_DVEC:    equ     036ah               ; device head
                         K_VER:     equ     0400h               ; kernel version number
@@ -167,7 +195,9 @@
                         K_BDAY:    equ     0406h               ; kernel build day
                         K_BYEAR:   equ     0407h               ; kernel build month
                         K_HIMEM:   equ     0442h               ; high memory pointer
-                        K_HEAP:    equ     044dh               ; heap pointer
+                        K_LOWMEM:  equ     0465h               ; lowest memory heap can use
+                        K_RETVAL:  equ     0467h               ; D on program exit
+                        K_HEAP:    equ     0468h               ; heap pointer
                         K_CLKFREQ: equ     0470h               ; system clock frequency
                         K_MONTH:   equ     0475h               ; date/time
                         K_DAY:     equ     0476h
@@ -178,19 +208,7 @@
                         K_SECDEN:  equ     047bh
                         K_SECNUM:  equ     047dh
                         ;
-                        ;O_HIMEM:   equ     0442h               ; himem value
-                        O_DATTIM:  equ     0475h               ; date/time block
-                        ;
-                        errexists: equ     1
-                        errnoffnd: equ     2
-                        errinvdir: equ     3
-                        errisdir:  equ     4
-                        errdirnotempty: equ   5
-                        errnotexec:     equ   6
-                        ;
-                        O_CREAT	equ	00000001b
-                        O_TRUNC	equ	00000010b
-                        O_APPND	equ	00000100b
+                        #endif
                         
                         ;
                         ; ************************************************************
@@ -200,10 +218,10 @@
                         ;
                         	org	02000h-6	; Header starts at 01ffah
    1ffa   20 00         	dw	2000h
-   1ffc   04 bd         	dw	endrom-2000h
+   1ffc   05 90         	dw	endrom-2000h
    1ffe   20 00         	dw	2000h
                         ;
-   2000   30 28         	br	Start
+   2000   30 2d         	br	Start
                         ; **************************************************
                         ; Build date format:
                         ; 80h+month, day, four digit year
@@ -212,19 +230,19 @@
                         ; build information, with build number and text.
                         ; **************************************************
                         ;
-   2002   87            date:	db	80h+7		; Month: July
-   2003   15            	db	21		; Day 21
-   2004   07 e5         	dw	2021		; year = 2021
+   2002   88 03 07 e5   date:	date
                         ;
-   2006   00 0b         build:	dw	11		; build number
-   2008   40 43 6f 70   	db	'@Copyleft 2021 Wayne Hortensius',0
-   200c   79 6c 65 66   
-   2010   74 20 32 30   
-   2014   32 31 20 57   
-   2018   61 79 6e 65   
-   201c   20 48 6f 72   
-   2020   74 65 6e 73   
-   2024   69 75 73 00   
+   2006   00 0c         build:	dw	12		; build number
+   2008   75 73 65 20   	db	'use Elf/OS calls for terminal output',0
+   200c   45 6c 66 2f   
+   2010   4f 53 20 63   
+   2014   61 6c 6c 73   
+   2018   20 66 6f 72   
+   201c   20 74 65 72   
+   2020   6d 69 6e 61   
+   2024   6c 20 6f 75   
+   2028   74 70 75 74   
+   202c   00            
                         ;
                         cr	equ	13
                         lf	equ	10
@@ -234,424 +252,456 @@
                         bs	equ	8
                         ;
                         Start:
-   2028   c0 20 f7      	lbr	Main
+   202d   c0 21 15      	lbr	Main
                         Help:
-   202b   d4 ff 66      	call	f_inmsg
-   202e   43 61 6c 65   	db	'Calendar, version 1.0',cr,lf
-   2032   6e 64 61 72   
-   2036   2c 20 76 65   
-   203a   72 73 69 6f   
-   203e   6e 20 31 2e   
-   2042   30 0d 0a      
-   2045   20 20 53 79   	db	'  Syntax:',cr,lf
-   2049   6e 74 61 78   
-   204d   3a 0d 0a      
-   2050   09 63 61 6c   	db	tab,'cal -h',tab,tab,'- Help',cr,lf,0
-   2054   20 2d 68 09   
-   2058   09 2d 20 48   
-   205c   65 6c 70 0d   
-   2060   0a 00         
+   2030   d4 03 4b      	call	O_INMSG
+   2033   43 61 6c 65   	db	'Calendar, version 1.0',cr,lf
+   2037   6e 64 61 72   
+   203b   2c 20 76 65   
+   203f   72 73 69 6f   
+   2043   6e 20 31 2e   
+   2047   30 0d 0a      
+   204a   20 20 53 79   	db	'  Syntax:',cr,lf
+   204e   6e 74 61 78   
+   2052   3a 0d 0a      
+   2055   09 63 61 6c   	db	tab,'cal -h',tab,tab,'- Help',cr,lf,0
+   2059   20 2d 68 09   
+   205d   09 2d 20 48   
+   2061   65 6c 70 0d   
+   2065   0a 00         
                         ;
-   2062   f8 24 bf f8   	load	rf,HasClock
-   2066   bd af         
-   2068   0f            	ldn	rf
-   2069   32 8b         	bz	Help2
-   206b   d4 ff 66      	call	f_inmsg
-   206e   09 63 61 6c   	db	tab,'cal',tab,tab,'- Show current month',cr,lf,0
-   2072   09 09 2d 20   
-   2076   53 68 6f 77   
-   207a   20 63 75 72   
-   207e   72 65 6e 74   
-   2082   20 6d 6f 6e   
-   2086   74 68 0d 0a   
-   208a   00            
+   2067   f8 24 bf f8   	load	rf,HasClock
+   206b   f3 af         
+   206d   0f            	ldn	rf
+   206e   32 90         	bz	Help2
+   2070   d4 03 4b      	call	O_INMSG
+   2073   09 63 61 6c   	db	tab,'cal',tab,tab,'- Show current month',cr,lf,0
+   2077   09 09 2d 20   
+   207b   53 68 6f 77   
+   207f   20 63 75 72   
+   2083   72 65 6e 74   
+   2087   20 6d 6f 6e   
+   208b   74 68 0d 0a   
+   208f   00            
                         Help2:
-   208b   d4 ff 66      	call	f_inmsg
-   208e   09 63 61 6c   	db	tab,'cal month year',tab,'- Show specified month',cr,lf
-   2092   20 6d 6f 6e   
-   2096   74 68 20 79   
-   209a   65 61 72 09   
-   209e   2d 20 53 68   
-   20a2   6f 77 20 73   
-   20a6   70 65 63 69   
-   20aa   66 69 65 64   
-   20ae   20 6d 6f 6e   
-   20b2   74 68 0d 0a   
-   20b6   09 09 6d 6f   	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
-   20ba   6e 74 68 09   
-   20be   3d 20 31 2d   
-   20c2   31 32 20 6f   
-   20c6   72 20 4a 61   
-   20ca   6e 2d 44 65   
-   20ce   63 0d 0a      
-   20d1   09 09 79 65   	db	tab,tab,'year',tab,'= 1-99 or 1582-9999',0
-   20d5   61 72 09 3d   
-   20d9   20 31 2d 39   
-   20dd   39 20 6f 72   
-   20e1   20 31 35 38   
-   20e5   32 2d 39 39   
-   20e9   39 39 00      
+   2090   d4 03 4b      	call	O_INMSG
+   2093   09 63 61 6c   	db	tab,'cal month year',tab,'- Show specified month',cr,lf
+   2097   20 6d 6f 6e   
+   209b   74 68 20 79   
+   209f   65 61 72 09   
+   20a3   2d 20 53 68   
+   20a7   6f 77 20 73   
+   20ab   70 65 63 69   
+   20af   66 69 65 64   
+   20b3   20 6d 6f 6e   
+   20b7   74 68 0d 0a   
+   20bb   09 09 6d 6f   	db	tab,tab,'month',tab,'= 1-12 or Jan-Dec',cr,lf
+   20bf   6e 74 68 09   
+   20c3   3d 20 31 2d   
+   20c7   31 32 20 6f   
+   20cb   72 20 4a 61   
+   20cf   6e 2d 44 65   
+   20d3   63 0d 0a      
+   20d6   09 09 79 65   	db	tab,tab,'year',tab,'= 1-99 or 1582-9999',0
+   20da   61 72 09 3d   
+   20de   20 31 2d 39   
+   20e2   39 20 6f 72   
+   20e6   20 31 35 38   
+   20ea   32 2d 39 39   
+   20ee   39 39 00      
                         Exit:
-   20ec   f8 25 bf f8   	load	rf,saveStack	; restore Elf/OS's stack
-   20f0   08 af         
-   20f2   4f            	lda	rf
-   20f3   b2            	phi	r2
-   20f4   0f            	ldn	rf
-   20f5   a2            	plo	r2
-   20f6   d5            	retn			; return to Elf/OS
+   20f1   f8 01         	ldi     1		; assume interrupts are enabled
+   20f3   cc            	lsie			; skip if they are
+   20f4   f8 00         	ldi	0		; mark interrupts disabled
+   20f6   ae            	plo	re		; save IE flag
+   20f7   f8 23         	ldi	023h		; setup for DIS (X=2, P=3)
+   20f9   52            	str	r2
+   20fa   71            	dis			; disable interrupts
+   20fb   22            	dec	r2
+   20fc   f8 25 bf f8   	load	rf,saveStack	; restore Elf/OS's stack
+   2100   3e af         
+   2102   4f            	lda	rf
+   2103   b2            	phi	r2
+   2104   0f            	ldn	rf
+   2105   a2            	plo	r2
+   2106   8e            	glo	re		; recover IE flag
+   2107   c2 21 0f      	lbz	Exit2		; jump if interrupts were disabled
+   210a   f8 23         	ldi	023h		; setup for RET (X=2, P=3)
+   210c   52            	str	r2
+   210d   70            	ret			; re-enable interrupts
+   210e   22            	dec	r2
+                        Exit2:
+   210f   60 72 b6 f0   	pop	r6		; restore Elf/OS's return address
+   2113   a6            
+   2114   d5            	retn			; return to Elf/OS
                         ;-----------------------
                         Main:
-   20f7   f8 25 bf f8   	load	rf,saveStack	; save Elf/OS's stack
-   20fb   08 af         
-   20fd   92            	ghi	r2
-   20fe   5f            	str	rf
-   20ff   1f            	inc	rf
-   2100   82            	glo	r2
-   2101   5f            	str	rf
-   2102   f8 25 b2 f8   	load	r2,localStack	; use our own stack
-   2106   07 a2         
-                        	
-   2108   d4 24 af      	call	HasRTC
-   210b   f8 24 bf f8   	load	rf,HasClock
-   210f   bd af         
-   2111   f8 00         	ldi	0		; D = 0x00 (doesn't have RTC)
-   2113   cb 21 18      	lbnf	NoClk
-   2116   ff 01         	smi	1		; D = 0xFF (has RTC)
-   2118   5f            NoClk:	str	rf
-   2119   f8 24 bf f8   	load	rf,Day
-   211d   c0 af         
-   211f   f8 00         	ldi	0		; zero out day
-   2121   5f            	str	rf		; (so no day hilited if command tail)
-   2122   d4 23 68      	call	crlf
+   2115   86 73 96 73   	push	r6		; save Elf/OS's return address on its stack
+   2119   f8 01         	ldi     1		; assume interrupts are enabled
+   211b   cc            	lsie			; skip if they are
+   211c   f8 00         	ldi	0		; mark interrupts disabled
+   211e   ae            	plo	re		; save IE flag
+   211f   f8 23         	ldi	023h		; setup for DIS (X=2, P=3)
+   2121   52            	str	r2
+   2122   71            	dis			; disable interrupts
+   2123   22            	dec	r2
+   2124   f8 25 bf f8   	load	rf,saveStack	; save Elf/OS's stack
+   2128   3e af         
+   212a   92            	ghi	r2
+   212b   5f            	str	rf
+   212c   1f            	inc	rf
+   212d   82            	glo	r2
+   212e   5f            	str	rf
+   212f   f8 25 b2 f8   	load	r2,localStack	; use our own stack
+   2133   3d a2         
+   2135   8e            	glo	re		; recover IE flag
+   2136   c2 21 3e      	lbz	Main2		; jump if interrupts were disabled
+   2139   f8 23         	ldi	023h		; setup for RET (X=2, P=3)
+   213b   52            	str	r2
+   213c   70            	ret			; re-enable interrupts
+   213d   22            	dec	r2
+                        Main2:
+   213e   d4 24 e5      	call	HasRTC
+   2141   f8 24 bf f8   	load	rf,HasClock
+   2145   f3 af         
+   2147   f8 00         	ldi	0		; D = 0x00 (doesn't have RTC)
+   2149   cb 21 4e      	lbnf	NoClk
+   214c   ff 01         	smi	1		; D = 0xFF (has RTC)
+   214e   5f            NoClk:	str	rf
+   214f   f8 24 bf f8   	load	rf,Day
+   2153   f6 af         
+   2155   f8 00         	ldi	0		; zero out day
+   2157   5f            	str	rf		; (so no day hilited if command tail)
+   2158   d4 23 9e      	call	crlf
                         SkipSpaces:
-   2125   4a            	lda	ra		; skip over any spaces
-   2126   ff 20         	smi	' '
-   2128   c2 21 25      	lbz	SkipSpaces
-   212b   2a            	dec	ra		; move back to non-space character
-   212c   0a            	ldn	ra		; get byte
-   212d   ca 21 6b      	lbnz	DoTail		; there was a cmd tail, process it
+   215b   4a            	lda	ra		; skip over any spaces
+   215c   ff 20         	smi	' '
+   215e   c2 21 5b      	lbz	SkipSpaces
+   2161   2a            	dec	ra		; move back to non-space character
+   2162   0a            	ldn	ra		; get byte
+   2163   ca 21 a1      	lbnz	DoTail		; there was a cmd tail, process it
                         ;
-   2130   f8 24 bf f8   	load	rf,HasClock
-   2134   bd af         
-   2136   0f            	ldn	rf		; no cmd tail, get system time if we can
-   2137   c2 21 46      	lbz	NoClkMsg	; no system clock to check, aww!
+   2166   f8 24 bf f8   	load	rf,HasClock
+   216a   f3 af         
+   216c   0f            	ldn	rf		; no cmd tail, get system time if we can
+   216d   c2 21 7c      	lbz	NoClkMsg	; no system clock to check, aww!
                         ;
-   213a   f8 24 bf f8   	load	rf,DateBlk	; point to kernel date/time
-   213e   bf af         
-   2140   d4 f8 15      	call	f_gettod	; call BIOS to get current date/time from RTC
-   2143   cb 21 57      	lbnf	GotTime
+   2170   f8 24 bf f8   	load	rf,DateBlk	; point to kernel date/time
+   2174   f5 af         
+   2176   d4 03 51      	call	O_GETTOD	; call BIOS to get current date/time from RTC
+   2179   cb 21 8d      	lbnf	GotTime
                         NoClkMsg:
-   2146   d4 ff 66      	call	f_inmsg
-   2149   07 4e 6f 20   	db	bell,'No RTC',cr,lf,lf,0
-   214d   52 54 43 0d   
-   2151   0a 0a 00      
-   2154   c0 20 2b      	lbr	Help
+   217c   d4 03 4b      	call	O_INMSG
+   217f   07 4e 6f 20   	db	bell,'No RTC',cr,lf,lf,0
+   2183   52 54 43 0d   
+   2187   0a 0a 00      
+   218a   c0 20 30      	lbr	Help
                         ;
                         GotTime:
-   2157   f8 24 bf f8   	load	rf,Year
-   215b   c1 af         
-   215d   0f            	ldn	rf		; convert offset year to absolute
-   215e   fc b4         	adi	low 1972	; binary year
-   2160   1f            	inc	rf
-   2161   5f            	str	rf		; store low byte of absolute year
-   2162   2f            	dec	rf
-   2163   f8 00         	ldi	0
-   2165   7c 07         	adci	high 1972
-   2167   5f            	str	rf		; store high byte of absolute year
-   2168   c0 21 fa      	lbr	ShowCal		; show the current month calendar
+   218d   f8 24 bf f8   	load	rf,Year
+   2191   f7 af         
+   2193   0f            	ldn	rf		; convert offset year to absolute
+   2194   fc b4         	adi	low 1972	; binary year
+   2196   1f            	inc	rf
+   2197   5f            	str	rf		; store low byte of absolute year
+   2198   2f            	dec	rf
+   2199   f8 00         	ldi	0
+   219b   7c 07         	adci	high 1972
+   219d   5f            	str	rf		; store high byte of absolute year
+   219e   c0 22 30      	lbr	ShowCal		; show the current month calendar
                         DoTail:
-   216b   ff 2d         	smi	'-'
-   216d   0a            	ldn	ra
-   216e   ca 21 79      	lbnz	DoTailX
-   2171   1a            	inc	ra
-   2172   0a            	ldn	ra
-   2173   ff 68         	smi	'h'
-   2175   0a            	ldn	ra
-   2176   c2 20 2b      	lbz	Help
+   21a1   ff 2d         	smi	'-'
+   21a3   0a            	ldn	ra
+   21a4   ca 21 af      	lbnz	DoTailX
+   21a7   1a            	inc	ra
+   21a8   0a            	ldn	ra
+   21a9   ff 68         	smi	'h'
+   21ab   0a            	ldn	ra
+   21ac   c2 20 30      	lbz	Help
                         DoTailX:
-   2179   d4 ff 5a      	call	f_isnum		; 1st non blank char: is it 0..9?
-   217c   8a            	glo	ra
-   217d   af            	plo	rf
-   217e   9a            	ghi	ra
-   217f   bf            	phi	rf
-   2180   cb 21 99      	lbnf	MonName		; nope, try a month name
-   2183   d4 ff 5d      	call	f_atoi		; get month #
-   2186   0f            	ldn	rf
-   2187   ff 20         	smi	' '
-   2189   ca 20 2b      	lbnz	Help
-   218c   9d            	ghi	rd
-   218d   ca 20 2b      	lbnz	Help		; out of range [1..12]
-   2190   8d            	glo	rd
-   2191   ff 0d         	smi	12+1
-   2193   c3 20 2b      	lbdf	Help		; out of range [1..12]
-   2196   c0 21 a8      	lbr	DoYear
+   21af   d4 ff 5a      	call	f_isnum		; 1st non blank char: is it 0..9?
+   21b2   8a            	glo	ra
+   21b3   af            	plo	rf
+   21b4   9a            	ghi	ra
+   21b5   bf            	phi	rf
+   21b6   cb 21 cf      	lbnf	MonName		; nope, try a month name
+   21b9   d4 ff 5d      	call	f_atoi		; get month #
+   21bc   0f            	ldn	rf
+   21bd   ff 20         	smi	' '
+   21bf   ca 20 30      	lbnz	Help
+   21c2   9d            	ghi	rd
+   21c3   ca 20 30      	lbnz	Help		; out of range [1..12]
+   21c6   8d            	glo	rd
+   21c7   ff 0d         	smi	12+1
+   21c9   c3 20 30      	lbdf	Help		; out of range [1..12]
+   21cc   c0 21 de      	lbr	DoYear
                         MonName:
-   2199   d4 23 d4      	call	MatchMonthName
-   219c   c2 20 2b      	lbz	Help
-   219f   ad            	plo	rd
+   21cf   d4 24 0a      	call	MatchMonthName
+   21d2   c2 20 30      	lbz	Help
+   21d5   ad            	plo	rd
                         SkipRest:
-   21a0   4f            	lda	rf
-   21a1   d4 ff 72      	call	f_isalpha
-   21a4   c3 21 a0      	lbdf	SkipRest
-   21a7   2f            	dec	rf		; back up to first non alpha char
+   21d6   4f            	lda	rf
+   21d7   d4 ff 72      	call	f_isalpha
+   21da   c3 21 d6      	lbdf	SkipRest
+   21dd   2f            	dec	rf		; back up to first non alpha char
                         DoYear:
-   21a8   f8 24 ba f8   	load	ra,Month
-   21ac   bf aa         
-   21ae   8d            	glo	rd
-   21af   5a            	str	ra		; save month #
+   21de   f8 24 ba f8   	load	ra,Month
+   21e2   f5 aa         
+   21e4   8d            	glo	rd
+   21e5   5a            	str	ra		; save month #
                         SkipYearSpaces:
-   21b0   4f            	lda	rf		; skip over any spaces
-   21b1   ff 20         	smi	' '
-   21b3   c2 21 b0      	lbz	SkipYearSpaces
-   21b6   2f            	dec	rf		; move back to non-space character
-   21b7   0f            	ldn	rf
-   21b8   c2 20 2b      	lbz	Help		; needed a year, we're done
-   21bb   d4 ff 5a      	call	f_isnum		; is it a digit?
-   21be   cb 20 2b      	lbnf	Help		; nope, we're done
-   21c1   d4 ff 5d      	call	f_atoi		; get year
-   21c4   0f            	ldn	rf		; end of command tail?
-   21c5   ca 20 2b      	lbnz	Help		; jump if not
-   21c8   9d            	ghi	rd
-   21c9   ca 21 df      	lbnz	FullYear
-   21cc   8d            	glo	rd
-   21cd   c2 20 2b      	lbz	Help		; year 0's no good
+   21e6   4f            	lda	rf		; skip over any spaces
+   21e7   ff 20         	smi	' '
+   21e9   c2 21 e6      	lbz	SkipYearSpaces
+   21ec   2f            	dec	rf		; move back to non-space character
+   21ed   0f            	ldn	rf
+   21ee   c2 20 30      	lbz	Help		; needed a year, we're done
+   21f1   d4 ff 5a      	call	f_isnum		; is it a digit?
+   21f4   cb 20 30      	lbnf	Help		; nope, we're done
+   21f7   d4 ff 5d      	call	f_atoi		; get year
+   21fa   0f            	ldn	rf		; end of command tail?
+   21fb   ca 20 30      	lbnz	Help		; jump if not
+   21fe   9d            	ghi	rd
+   21ff   ca 22 15      	lbnz	FullYear
+   2202   8d            	glo	rd
+   2203   c2 20 30      	lbz	Help		; year 0's no good
                         DoYear1:
-   21d0   8d            	glo	rd
-   21d1   ff 64         	smi	100
-   21d3   c3 21 df      	lbdf	FullYear
-   21d6   8d            	glo	rd
-   21d7   fc d0         	adi	low 2000	; 2 digit years assumed 20xx
-   21d9   ad            	plo	rd
-   21da   f8 00         	ldi	0
-   21dc   7c 07         	adci	high 2000
-   21de   bd            	phi	rd
+   2206   8d            	glo	rd
+   2207   ff 64         	smi	100
+   2209   c3 22 15      	lbdf	FullYear
+   220c   8d            	glo	rd
+   220d   fc d0         	adi	low 2000	; 2 digit years assumed 20xx
+   220f   ad            	plo	rd
+   2210   f8 00         	ldi	0
+   2212   7c 07         	adci	high 2000
+   2214   bd            	phi	rd
                         FullYear:
-   21df   f8 24 bf f8   	load	rf,Year+1
-   21e3   c2 af         
-   21e5   8d            	glo	rd
-   21e6   5f            	str	rf
-   21e7   ff 2e         	smi	low 1582	; ZCAL limited the calendar
-   21e9   2f            	dec	rf		; to 1766..2499, though I'm
-   21ea   9d            	ghi	rd		; not away of any such
-   21eb   5f            	str	rf		; limitation in Zeller's
-   21ec   7f 06         	smbi	high 1582	; congruence
-   21ee   cb 20 2b      	lbnf	Help
+   2215   f8 24 bf f8   	load	rf,Year+1
+   2219   f8 af         
+   221b   8d            	glo	rd
+   221c   5f            	str	rf
+   221d   ff 2e         	smi	low 1582	; ZCAL limited the calendar
+   221f   2f            	dec	rf		; to 1766..2499, though I'm
+   2220   9d            	ghi	rd		; not away of any such
+   2221   5f            	str	rf		; limitation in Zeller's
+   2222   7f 06         	smbi	high 1582	; congruence
+   2224   cb 20 30      	lbnf	Help
                         ;
-   21f1   8d            	glo	rd
-   21f2   ff 10         	smi	low (9999+1)
-   21f4   9d            	ghi	rd
-   21f5   7f 27         	smbi	high (9999+1)
-   21f7   c3 20 2b      	lbdf	Help
+   2227   8d            	glo	rd
+   2228   ff 10         	smi	low (9999+1)
+   222a   9d            	ghi	rd
+   222b   7f 27         	smbi	high (9999+1)
+   222d   c3 20 30      	lbdf	Help
                         ;
                         ShowCal:
-   21fa   f8 20         	ldi	' '
-   21fc   d4 03 30      	call	O_TYPE
-   21ff   f8 24 bf f8   	load	rf,MonthNames
-   2203   30 af         
-   2205   f8 24 bd f8   	load	rd,DateBlk
-   2209   bf ad         
-   220b   0d            	ldn	rd		; month #
-   220c   fd 0c         	sdi	12		; D = 12-month #
-   220e   d4 24 7c      	call	prtTblStr	; print month name
+   2230   f8 20         	ldi	' '
+   2232   d4 03 30      	call	O_TYPE
+   2235   f8 24 bf f8   	load	rf,MonthNames
+   2239   66 af         
+   223b   f8 24 bd f8   	load	rd,DateBlk
+   223f   f5 ad         
+   2241   0d            	ldn	rd		; month #
+   2242   fd 0c         	sdi	12		; D = 12-month #
+   2244   d4 24 b2      	call	prtTblStr	; print month name
                         ;	
-   2211   f8 24 bf f8   	load	rf,Year
-   2215   c1 af         
-   2217   4f            	lda	rf		; high byte of year
-   2218   bd            	phi	rd
-   2219   0f            	ldn	rf		; low byte of year
-   221a   ad            	plo	rd
-   221b   f8 25 bf f8   	load	rf,buffer
-   221f   0a af         
-   2221   d4 ff 60      	call	f_uintout
-   2224   f8 00         	ldi	0
-   2226   5f            	str	rf
-   2227   f8 25 bf f8   	load	rf,buffer
-   222b   0a af         
-   222d   d4 03 33      	call	O_MSG		; print year
+   2247   f8 24 bf f8   	load	rf,Year
+   224b   f7 af         
+   224d   4f            	lda	rf		; high byte of year
+   224e   bd            	phi	rd
+   224f   0f            	ldn	rf		; low byte of year
+   2250   ad            	plo	rd
+   2251   f8 25 bf f8   	load	rf,buffer
+   2255   40 af         
+   2257   d4 ff 60      	call	f_uintout
+   225a   f8 00         	ldi	0
+   225c   5f            	str	rf
+   225d   f8 25 bf f8   	load	rf,buffer
+   2261   40 af         
+   2263   d4 03 33      	call	O_MSG		; print year
                         ;
-   2230   d4 ff 66      	call	f_inmsg
-   2233   0d 0a         	db	cr,lf
-   2235   20 53 75 6e   	db	' Sun Mon Tue Wed Thu Fri Sat'
-   2239   20 4d 6f 6e   
-   223d   20 54 75 65   
-   2241   20 57 65 64   
-   2245   20 54 68 75   
-   2249   20 46 72 69   
-   224d   20 53 61 74   
-   2251   0d 0a 00      	db	cr,lf,0
+   2266   d4 03 4b      	call	O_INMSG
+   2269   0d 0a         	db	cr,lf
+   226b   20 53 75 6e   	db	' Sun Mon Tue Wed Thu Fri Sat'
+   226f   20 4d 6f 6e   
+   2273   20 54 75 65   
+   2277   20 57 65 64   
+   227b   20 54 68 75   
+   227f   20 46 72 69   
+   2283   20 53 61 74   
+   2287   0d 0a 00      	db	cr,lf,0
                         ;
-   2254   f8 24 b7 f8   	load	r7,DateBlk
-   2258   bf a7         
-   225a   d4 23 6f      	call	GetDOW		; get the DOW of the 1st of the month
-   225d   27            	dec	r7		; r7 -> DOW1st
-   225e   57            	str	r7		; store DOW of 1st day of month
-   225f   17            	inc	r7		; r7 -> Month
-   2260   87            	glo	r7
-   2261   af            	plo	rf
-   2262   97            	ghi	r7
-   2263   bf            	phi	rf
-   2264   f8 24 bd f8   	load	rd,Date2Blk
-   2268   c3 ad         
-   226a   f8 04         	ldi	4
-   226c   ac            	plo	rc
-   226d   f8 00         	ldi	0
-   226f   bc            	phi	rc
-   2270   d4 ff 1b      	call	f_memcpy	; copy DateBlk to Date2Blk
+   228a   f8 24 b7 f8   	load	r7,DateBlk
+   228e   f5 a7         
+   2290   d4 23 a5      	call	GetDOW		; get the DOW of the 1st of the month
+   2293   27            	dec	r7		; r7 -> DOW1st
+   2294   57            	str	r7		; store DOW of 1st day of month
+   2295   17            	inc	r7		; r7 -> Month
+   2296   87            	glo	r7
+   2297   af            	plo	rf
+   2298   97            	ghi	r7
+   2299   bf            	phi	rf
+   229a   f8 24 bd f8   	load	rd,Date2Blk
+   229e   f9 ad         
+   22a0   f8 04         	ldi	4
+   22a2   ac            	plo	rc
+   22a3   f8 00         	ldi	0
+   22a5   bc            	phi	rc
+   22a6   d4 ff 1b      	call	f_memcpy	; copy DateBlk to Date2Blk
                         
-   2273   2d            	dec	rd
-   2274   2d            	dec	rd
-   2275   2d            	dec	rd
-   2276   2d            	dec	rd		; rd -> Date2Blk
+   22a9   2d            	dec	rd
+   22aa   2d            	dec	rd
+   22ab   2d            	dec	rd
+   22ac   2d            	dec	rd		; rd -> Date2Blk
                         
-   2277   0d            	ldn	rd
-   2278   fc 01         	adi	1
-   227a   5d            	str	rd		; store next month
-   227b   ff 0d         	smi	13
-   227d   ca 22 91      	lbnz	NextMonth
-   2280   f8 01         	ldi	1
-   2282   5d            	str	rd
-   2283   1d            	inc	rd
-   2284   1d            	inc	rd		; rd -> high byte of year
-   2285   4d            	lda	rd		; rf.1 = m(rd), rf.0 = m(rd+1)
-   2286   bf            	phi	rf
-   2287   0d            	ldn	rd
-   2288   af            	plo	rf
-   2289   1f            	inc	rf		; rf = next year
-   228a   8f            	glo	rf
-   228b   5d            	str	rd
-   228c   2d            	dec	rd
-   228d   9f            	ghi	rf
-   228e   5d            	str	rd
-   228f   2d            	dec	rd
-   2290   2d            	dec	rd		; rd -> Date2Blk
+   22ad   0d            	ldn	rd
+   22ae   fc 01         	adi	1
+   22b0   5d            	str	rd		; store next month
+   22b1   ff 0d         	smi	13
+   22b3   ca 22 c7      	lbnz	NextMonth
+   22b6   f8 01         	ldi	1
+   22b8   5d            	str	rd
+   22b9   1d            	inc	rd
+   22ba   1d            	inc	rd		; rd -> high byte of year
+   22bb   4d            	lda	rd		; rf.1 = m(rd), rf.0 = m(rd+1)
+   22bc   bf            	phi	rf
+   22bd   0d            	ldn	rd
+   22be   af            	plo	rf
+   22bf   1f            	inc	rf		; rf = next year
+   22c0   8f            	glo	rf
+   22c1   5d            	str	rd
+   22c2   2d            	dec	rd
+   22c3   9f            	ghi	rf
+   22c4   5d            	str	rd
+   22c5   2d            	dec	rd
+   22c6   2d            	dec	rd		; rd -> Date2Blk
                         NextMonth:
-   2291   8d            	glo	rd
-   2292   a7            	plo	r7
-   2293   9d            	ghi	rd
-   2294   b7            	phi	r7
-   2295   d4 23 6f      	call	GetDOW		; get the DOW of 1st of the next month
-   2298   27            	dec	r7
-   2299   27            	dec	r7
-   229a   27            	dec	r7
-   229b   27            	dec	r7
-   229c   27            	dec	r7		; r7 -> DOW1st
-   229d   fc 07         	adi	7
-   229f   e7            	sex	r7
-   22a0   f7            	sm
-   22a1   e2            	sex	r2
+   22c7   8d            	glo	rd
+   22c8   a7            	plo	r7
+   22c9   9d            	ghi	rd
+   22ca   b7            	phi	r7
+   22cb   d4 23 a5      	call	GetDOW		; get the DOW of 1st of the next month
+   22ce   27            	dec	r7
+   22cf   27            	dec	r7
+   22d0   27            	dec	r7
+   22d1   27            	dec	r7
+   22d2   27            	dec	r7		; r7 -> DOW1st
+   22d3   fc 07         	adi	7
+   22d5   e7            	sex	r7
+   22d6   f7            	sm
+   22d7   e2            	sex	r2
                         DaysInMonth:
-   22a2   fc 07         	adi	7		; figure out how many days in the month
-   22a4   bb            	phi	rb		; (all months have at least 28 days)
-   22a5   ff 1c         	smi	28
-   22a7   9b            	ghi	rb
-   22a8   cb 22 a2      	lbnf	DaysInMonth
-   22ab   ac            	plo	rc		; rc = # of days in the month
-   22ac   f8 01         	ldi	1		; start with 1st day of month
-   22ae   a9            	plo	r9
-   22af   f8 00         	ldi	0
-   22b1   a8            	plo	r8		; reset "VT1802 esc seq used space" flag
-   22b2   07            	ldn	r7		; fetch DOW1st
-   22b3   17            	inc	r7
-   22b4   17            	inc	r7		; r7 -> day of month
-   22b5   c2 22 cd      	lbz	FullWeek	; month starts on Sunday, so full week
-   22b8   aa            	plo	ra
-   22b9   f8 07         	ldi	7
-   22bb   ab            	plo	rb		; # days remaining in first week
+   22d8   fc 07         	adi	7		; figure out how many days in the month
+   22da   bb            	phi	rb		; (all months have at least 28 days)
+   22db   ff 1c         	smi	28
+   22dd   9b            	ghi	rb
+   22de   cb 22 d8      	lbnf	DaysInMonth
+   22e1   ac            	plo	rc		; rc = # of days in the month
+   22e2   f8 01         	ldi	1		; start with 1st day of month
+   22e4   a9            	plo	r9
+   22e5   f8 00         	ldi	0
+   22e7   a8            	plo	r8		; reset "VT1802 esc seq used space" flag
+   22e8   07            	ldn	r7		; fetch DOW1st
+   22e9   17            	inc	r7
+   22ea   17            	inc	r7		; r7 -> day of month
+   22eb   c2 23 03      	lbz	FullWeek	; month starts on Sunday, so full week
+   22ee   aa            	plo	ra
+   22ef   f8 07         	ldi	7
+   22f1   ab            	plo	rb		; # days remaining in first week
                         MoveFirst:
-   22bc   d4 ff 66      	call	f_inmsg		; space over to 1st of month
-   22bf   20 20 20 20   	db	'    ',0
-   22c3   00            
-   22c4   2b            	dec	rb
-   22c5   2a            	dec	ra
-   22c6   8a            	glo	ra
-   22c7   ca 22 bc      	lbnz	MoveFirst
-   22ca   c0 22 d0      	lbr	WeekLoop
+   22f2   d4 03 4b      	call	O_INMSG		; space over to 1st of month
+   22f5   20 20 20 20   	db	'    ',0
+   22f9   00            
+   22fa   2b            	dec	rb
+   22fb   2a            	dec	ra
+   22fc   8a            	glo	ra
+   22fd   ca 22 f2      	lbnz	MoveFirst
+   2300   c0 23 06      	lbr	WeekLoop
                         FullWeek:
-   22cd   f8 07         	ldi	7
-   22cf   ab            	plo	rb		; # of days in this week to print
+   2303   f8 07         	ldi	7
+   2305   ab            	plo	rb		; # of days in this week to print
                         WeekLoop:
-   22d0   88            	glo	r8		; only print 1 leading space after
-   22d1   ca 22 d9      	lbnz	LeadingSpace	; highlighting the current day on the
-   22d4   f8 20         	ldi	' '		; VT1802 board (reverse/normal video
-   22d6   d4 03 30      	call	O_TYPE		; occupies a character spot afaict)
+   2306   88            	glo	r8		; only print 1 leading space after
+   2307   ca 23 0f      	lbnz	LeadingSpace	; highlighting the current day on the
+   230a   f8 20         	ldi	' '		; VT1802 board (reverse/normal video
+   230c   d4 03 30      	call	O_TYPE		; occupies a character spot afaict)
                         LeadingSpace:
-   22d9   f8 20         	ldi	' '
-   22db   d4 03 30      	call	O_TYPE
-   22de   f8 00         	ldi	0		; reset VT1802 flag
-   22e0   a8            	plo	r8
+   230f   f8 20         	ldi	' '
+   2311   d4 03 30      	call	O_TYPE
+   2314   f8 00         	ldi	0		; reset VT1802 flag
+   2316   a8            	plo	r8
                         ;
-   22e1   89            	glo	r9
-   22e2   e7            	sex	r7
-   22e3   f7            	sm
-   22e4   e2            	sex	r2
-   22e5   ca 22 ff      	lbnz	NotToday1
-   22e8   f8 23 bf f8   	load	rf,ansi_hilite
-   22ec   56 af         
-   22ee   9e            	ghi	re		; check to see if the VT1802
-   22ef   fa fe         	ani	0feh		; video card is active, and if
-   22f1   fb fe         	xri	0feh		; so, use a VT52 video hilite
-   22f3   ca 22 fc      	lbnz	hilite_day
-   22f6   f8 23 bf f8   	load	rf,vt52_hilite
-   22fa   5f af         
+   2317   89            	glo	r9
+   2318   e7            	sex	r7
+   2319   f7            	sm
+   231a   e2            	sex	r2
+   231b   ca 23 35      	lbnz	NotToday1
+   231e   f8 23 bf f8   	load	rf,ansi_hilite
+   2322   8c af         
+   2324   9e            	ghi	re		; check to see if the VT1802
+   2325   fa fe         	ani	0feh		; video card is active, and if
+   2327   fb fe         	xri	0feh		; so, use a VT52 video hilite
+   2329   ca 23 32      	lbnz	hilite_day
+   232c   f8 23 bf f8   	load	rf,vt52_hilite
+   2330   95 af         
                         hilite_day:
-   22fc   d4 03 33      	call	O_MSG
+   2332   d4 03 33      	call	O_MSG
                         NotToday1:
-   22ff   89            	glo	r9		; day of month < 10 ?
-   2300   ff 0a         	smi	10
-   2302   c3 23 0a      	lbdf	Gt10
-   2305   f8 20         	ldi	' '
-   2307   d4 03 30      	call	O_TYPE		; yes, print a leading blank
-   230a   89            Gt10:	glo	r9
-   230b   ad            	plo	rd
-   230c   f8 00         	ldi	0
-   230e   bd            	phi	rd
-   230f   f8 25 bf f8   	load	rf,buffer
-   2313   0a af         
-   2315   d4 ff 60      	call	f_uintout
-   2318   f8 00         	ldi	0
-   231a   5f            	str	rf
-   231b   f8 25 bf f8   	load	rf,buffer
-   231f   0a af         
-   2321   d4 03 33      	call	O_MSG		; print day of month
+   2335   89            	glo	r9		; day of month < 10 ?
+   2336   ff 0a         	smi	10
+   2338   c3 23 40      	lbdf	Gt10
+   233b   f8 20         	ldi	' '
+   233d   d4 03 30      	call	O_TYPE		; yes, print a leading blank
+   2340   89            Gt10:	glo	r9
+   2341   ad            	plo	rd
+   2342   f8 00         	ldi	0
+   2344   bd            	phi	rd
+   2345   f8 25 bf f8   	load	rf,buffer
+   2349   40 af         
+   234b   d4 ff 60      	call	f_uintout
+   234e   f8 00         	ldi	0
+   2350   5f            	str	rf
+   2351   f8 25 bf f8   	load	rf,buffer
+   2355   40 af         
+   2357   d4 03 33      	call	O_MSG		; print day of month
                         
-   2324   89            	glo	r9
-   2325   e7            	sex	r7
-   2326   f7            	sm
-   2327   e2            	sex	r2
-   2328   ca 23 45      	lbnz	NotToday2
-   232b   f8 23 bf f8   	load	rf,ansi_normal
-   232f   5b af         
-   2331   9e            	ghi	re		; check to see if the VT1802
-   2332   fa fe         	ani	0feh		; video card is active, and if
-   2334   fb fe         	xri	0feh		; so, use a VT52 video normal string
-   2336   ca 23 42      	lbnz	normal_day
-   2339   f8 01         	ldi	1		; set "only one space" flag after VT1802
-   233b   a8            	plo	r8		; escape sequence
-   233c   f8 23 bf f8   	load	rf,vt52_normal
-   2340   64 af         
+   235a   89            	glo	r9
+   235b   e7            	sex	r7
+   235c   f7            	sm
+   235d   e2            	sex	r2
+   235e   ca 23 7b      	lbnz	NotToday2
+   2361   f8 23 bf f8   	load	rf,ansi_normal
+   2365   91 af         
+   2367   9e            	ghi	re		; check to see if the VT1802
+   2368   fa fe         	ani	0feh		; video card is active, and if
+   236a   fb fe         	xri	0feh		; so, use a VT52 video normal string
+   236c   ca 23 78      	lbnz	normal_day
+   236f   f8 01         	ldi	1		; set "only one space" flag after VT1802
+   2371   a8            	plo	r8		; escape sequence
+   2372   f8 23 bf f8   	load	rf,vt52_normal
+   2376   9a af         
                         normal_day:
-   2342   d4 03 33      	call	O_MSG
+   2378   d4 03 33      	call	O_MSG
                         NotToday2:
-   2345   19            	inc	r9		; next day of month
-   2346   2c            	dec	rc
-   2347   8c            	glo	rc
-   2348   c2 20 ec      	lbz	Exit
-   234b   2b            	dec	rb
-   234c   8b            	glo	rb
-   234d   ca 22 d0      	lbnz	WeekLoop
-   2350   d4 23 68      	call	crlf
-   2353   c0 22 cd      	lbr	FullWeek
+   237b   19            	inc	r9		; next day of month
+   237c   2c            	dec	rc
+   237d   8c            	glo	rc
+   237e   c2 20 f1      	lbz	Exit
+   2381   2b            	dec	rb
+   2382   8b            	glo	rb
+   2383   ca 23 06      	lbnz	WeekLoop
+   2386   d4 23 9e      	call	crlf
+   2389   c0 23 03      	lbr	FullWeek
                         ;
-   2356   1b 5b 37 6d   ansi_hilite:	db	esc,'[7m',0	; ANSI hilight today
-   235a   00            
-   235b   1b 5b 6d 00   ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
-   235f   08 1b 4e 50   vt52_hilite:	db	bs,esc,'NP',0	; VT1802 hilight today
-   2363   00            
-   2364   1b 4e 40 00   vt52_normal:	db	esc,'N@',0	; VT1802 end hilight of today
+   238c   1b 5b 37 6d   ansi_hilite:	db	esc,'[7m',0	; ANSI hilight today
+   2390   00            
+   2391   1b 5b 6d 00   ansi_normal:	db	esc,'[m',0	; ANSI end hilight of today
+   2395   08 1b 4e 50   vt52_hilite:	db	bs,esc,'NP',0	; VT1802 hilight today
+   2399   00            
+   239a   1b 4e 40 00   vt52_normal:	db	esc,'N@',0	; VT1802 end hilight of today
                         ;------------------------
-   2368   d4 ff 66      crlf:	call	f_inmsg
-   236b   0d 0a 00      	db	cr,lf,0
-   236e   d5            	retn
+   239e   d4 03 4b      crlf:	call	O_INMSG
+   23a1   0d 0a 00      	db	cr,lf,0
+   23a4   d5            	retn
                         ;------------------------
                         ;
                         ; Zeller's Congruence algorithm for determining
@@ -662,80 +712,80 @@
                         ;
                         ; ALTERS r8,r9,ra,rb,rc,rd
                         ;
-   236f   07            GetDOW:	ldn	r7		; month
-   2370   ff 03         	smi	3		; march - december?
-   2372   17            	inc	r7
-   2373   17            	inc	r7		; R7 -> high byte of year word
-   2374   47            	lda	r7
-   2375   bf            	phi	rf
-   2376   07            	ldn	r7		; fetch low byte of year word
-   2377   af            	plo	rf
-   2378   c3 23 7c      	lbdf	GetDOW1		; DF=1 if month >= 3
-   237b   2f            	dec	rf		; --year for january & february
+   23a5   07            GetDOW:	ldn	r7		; month
+   23a6   ff 03         	smi	3		; march - december?
+   23a8   17            	inc	r7
+   23a9   17            	inc	r7		; R7 -> high byte of year word
+   23aa   47            	lda	r7
+   23ab   bf            	phi	rf
+   23ac   07            	ldn	r7		; fetch low byte of year word
+   23ad   af            	plo	rf
+   23ae   c3 23 b2      	lbdf	GetDOW1		; DF=1 if month >= 3
+   23b1   2f            	dec	rf		; --year for january & february
                         GetDOW1:
-   237c   f8 00 bd f8   	load	rd,100
-   2380   64 ad         
-   2382   d4 ff 33      	call	f_div16		; RB=year DIV 100 (century), RF=year MOD 100
-   2385   8b            	glo	rb
-   2386   aa            	plo	ra		; save century
-   2387   f8 05         	ldi	low 5
-   2389   ad            	plo	rd
-   238a   f8 00         	ldi	low 0
-   238c   bd            	phi	rd
-   238d   d4 ff 30      	call	f_mul16		; RB = 5 * (year MOD 100)
-   2390   9b            	ghi	rb
-   2391   f6            	shr
-   2392   bb            	phi	rb
-   2393   8b            	glo	rb
-   2394   76            	shrc
-   2395   ab            	plo	rb
-   2396   9b            	ghi	rb
-   2397   f6            	shr
-   2398   bb            	phi	rb
-   2399   8b            	glo	rb
-   239a   76            	shrc
-   239b   ab            	plo	rb		; RB = 5 * (year mod 100) DIV 4
+   23b2   f8 00 bd f8   	load	rd,100
+   23b6   64 ad         
+   23b8   d4 ff 33      	call	f_div16		; RB=year DIV 100 (century), RF=year MOD 100
+   23bb   8b            	glo	rb
+   23bc   aa            	plo	ra		; save century
+   23bd   f8 05         	ldi	low 5
+   23bf   ad            	plo	rd
+   23c0   f8 00         	ldi	low 0
+   23c2   bd            	phi	rd
+   23c3   d4 ff 30      	call	f_mul16		; RB = 5 * (year MOD 100)
+   23c6   9b            	ghi	rb
+   23c7   f6            	shr
+   23c8   bb            	phi	rb
+   23c9   8b            	glo	rb
+   23ca   76            	shrc
+   23cb   ab            	plo	rb
+   23cc   9b            	ghi	rb
+   23cd   f6            	shr
+   23ce   bb            	phi	rb
+   23cf   8b            	glo	rb
+   23d0   76            	shrc
+   23d1   ab            	plo	rb		; RB = 5 * (year mod 100) DIV 4
                         
-   239c   27            	dec	r7		; R7 -> high byte of year word
-   239d   27            	dec	r7		; R7 -> day
-   239e   27            	dec	r7		; R7 -> month
-   239f   f8 c7         	ldi	low (valtab-1)
-   23a1   e7            	sex	r7
-   23a2   f4            	add
-   23a3   e2            	sex	r2
-   23a4   ac            	plo	rc
-   23a5   f8 23         	ldi	high (valtab-1)
-   23a7   7c 00         	adci	0
-   23a9   bc            	phi	rc		; index into valtab
-   23aa   8b            	glo	rb
-   23ab   ec            	sex	rc
-   23ac   f4            	add			; result = (13 * month - 1 ) DIV 5 + 5 * year MOD 100) DIV 4
-   23ad   e2            	sex	r2
-   23ae   52            	str	r2		; save result
-   23af   8a            	glo	ra
-   23b0   f6            	shr
-   23b1   f6            	shr			; century DIV 4
-   23b2   f4            	add			; result += century DIV 4
-   23b3   52            	str	r2
-   23b4   8a            	glo	ra
-   23b5   fe            	shl			; century * 2
-   23b6   f5            	sd			; D = century * 2 - result
-   23b7   52            	str	r2
-   23b8   c3 23 c0      	lbdf	GetDOW3		; branch if result >= 0
+   23d2   27            	dec	r7		; R7 -> high byte of year word
+   23d3   27            	dec	r7		; R7 -> day
+   23d4   27            	dec	r7		; R7 -> month
+   23d5   f8 fd         	ldi	low (valtab-1)
+   23d7   e7            	sex	r7
+   23d8   f4            	add
+   23d9   e2            	sex	r2
+   23da   ac            	plo	rc
+   23db   f8 23         	ldi	high (valtab-1)
+   23dd   7c 00         	adci	0
+   23df   bc            	phi	rc		; index into valtab
+   23e0   8b            	glo	rb
+   23e1   ec            	sex	rc
+   23e2   f4            	add			; result = (13 * month - 1 ) DIV 5 + 5 * year MOD 100) DIV 4
+   23e3   e2            	sex	r2
+   23e4   52            	str	r2		; save result
+   23e5   8a            	glo	ra
+   23e6   f6            	shr
+   23e7   f6            	shr			; century DIV 4
+   23e8   f4            	add			; result += century DIV 4
+   23e9   52            	str	r2
+   23ea   8a            	glo	ra
+   23eb   fe            	shl			; century * 2
+   23ec   f5            	sd			; D = century * 2 - result
+   23ed   52            	str	r2
+   23ee   c3 23 f6      	lbdf	GetDOW3		; branch if result >= 0
                         GetDOW2:
-   23bb   fc 07         	adi	7
-   23bd   cb 23 bb      	lbnf	GetDOW2		; loop until result >= 0
+   23f1   fc 07         	adi	7
+   23f3   cb 23 f1      	lbnf	GetDOW2		; loop until result >= 0
                         GetDOW3:
-   23c0   ff 07         	smi	7		; do MOD 7
-   23c2   c3 23 c0      	lbdf	GetDOW3		; loop until result < 0
-   23c5   fc 07         	adi	7		; MOD 7 done
-   23c7   d5            	retn
+   23f6   ff 07         	smi	7		; do MOD 7
+   23f8   c3 23 f6      	lbdf	GetDOW3		; loop until result < 0
+   23fb   fc 07         	adi	7		; MOD 7 done
+   23fd   d5            	retn
                         ;
                         ;	Precomputed (13 * month) DIV 5 values
                         ;
-   23c8   1d 20 03 06   valtab:	db	29,32,3,6,8,11,13,16,19,21,24,26
-   23cc   08 0b 0d 10   
-   23d0   13 15 18 1a   
+   23fe   1d 20 03 06   valtab:	db	29,32,3,6,8,11,13,16,19,21,24,26
+   2402   08 0b 0d 10   
+   2406   13 15 18 1a   
                         ;------------------------
                         ;
                         ;  MatchMonthName: find a unique prefix match for a NUL terminated string
@@ -746,98 +796,98 @@
                         ;  ALTERS: r7, r8, r9, ra, rb, rc, rd
                         ;
                         MatchMonthName:
-   23d4   f8 24 bd f8   	load	rd,MonthNames
-   23d8   30 ad         
-   23da   f8 00         	ldi	0
-   23dc   a7            	plo	r7		; R7 is longest substring matched so far
-   23dd   a8            	plo	r8		; R8 is match # (0 means no match)
-   23de   f8 0c         	ldi	12		; # month names to search
-   23e0   ab            	plo	rb		; RB is loop counter
+   240a   f8 24 bd f8   	load	rd,MonthNames
+   240e   66 ad         
+   2410   f8 00         	ldi	0
+   2412   a7            	plo	r7		; R7 is longest substring matched so far
+   2413   a8            	plo	r8		; R8 is match # (0 means no match)
+   2414   f8 0c         	ldi	12		; # month names to search
+   2416   ab            	plo	rb		; RB is loop counter
                         MonthLoop:
-   23e1   8f            	glo	rf
-   23e2   a9            	plo	r9
-   23e3   9f            	ghi	rf
-   23e4   b9            	phi	r9		; r9 is working cmd tail ptr
-   23e5   f8 ff         	ldi	0ffh
-   23e7   ac            	plo	rc		; rc is working matched substring length 
+   2417   8f            	glo	rf
+   2418   a9            	plo	r9
+   2419   9f            	ghi	rf
+   241a   b9            	phi	r9		; r9 is working cmd tail ptr
+   241b   f8 ff         	ldi	0ffh
+   241d   ac            	plo	rc		; rc is working matched substring length 
                         ChkNextChr:
-   23e8   1d            	inc	rd		; next byte in table
-   23e9   1c            	inc	rc		; # chars matched
-   23ea   09            	ldn	r9		; char from cmd tail
-   23eb   ff 61         	smi	'a'
-   23ed   49            	lda	r9
-   23ee   cb 23 f3      	lbnf	NotLower
-   23f1   fa df         	ani	not 20h		; make upper case
+   241e   1d            	inc	rd		; next byte in table
+   241f   1c            	inc	rc		; # chars matched
+   2420   09            	ldn	r9		; char from cmd tail
+   2421   ff 61         	smi	'a'
+   2423   49            	lda	r9
+   2424   cb 24 29      	lbnf	NotLower
+   2427   fa df         	ani	not 20h		; make upper case
                         NotLower:
-   23f3   ed            	sex	rd
-   23f4   f3            	xor			; compare to month char
-   23f5   fa df         	ani	not 20h		; make it case insensitive
-   23f7   e2            	sex	r2
-   23f8   c2 23 e8      	lbz	ChkNextChr
-   23fb   fb 80         	xri	80h
-   23fd   ca 24 09      	lbnz	FindEoS		; jump if wasn't last char in table entry
-   2400   1c            	inc	rc		; matched a complete table entry
-   2401   09            	ldn	r9
-   2402   ff 20         	smi	' '
-   2404   ca 24 09      	lbnz	FindEoS		; end of month name?
-   2407   8b            	glo	rb		; complete cmd tail string matched
-   2408   d5            	retn
+   2429   ed            	sex	rd
+   242a   f3            	xor			; compare to month char
+   242b   fa df         	ani	not 20h		; make it case insensitive
+   242d   e2            	sex	r2
+   242e   c2 24 1e      	lbz	ChkNextChr
+   2431   fb 80         	xri	80h
+   2433   ca 24 3f      	lbnz	FindEoS		; jump if wasn't last char in table entry
+   2436   1c            	inc	rc		; matched a complete table entry
+   2437   09            	ldn	r9
+   2438   ff 20         	smi	' '
+   243a   ca 24 3f      	lbnz	FindEoS		; end of month name?
+   243d   8b            	glo	rb		; complete cmd tail string matched
+   243e   d5            	retn
                         FindEoS:
-   2409   4d            	lda	rd
-   240a   fe            	shl
-   240b   cb 24 09      	lbnf	FindEoS		; find end of string (hi bit set)
-   240e   2d            	dec	rd
-   240f   29            	dec	r9
-   2410   09            	ldn	r9		; did we get to the end of the 
-   2411   ff 20         	smi	' '		; cmd tail word?
-   2413   ca 24 29      	lbnz	DoNextMonth
+   243f   4d            	lda	rd
+   2440   fe            	shl
+   2441   cb 24 3f      	lbnf	FindEoS		; find end of string (hi bit set)
+   2444   2d            	dec	rd
+   2445   29            	dec	r9
+   2446   09            	ldn	r9		; did we get to the end of the 
+   2447   ff 20         	smi	' '		; cmd tail word?
+   2449   ca 24 5f      	lbnz	DoNextMonth
                         
-   2416   8c            	glo	rc		; substr length
-   2417   52            	str	r2		; store it for a moment
-   2418   87            	glo	r7
-   2419   f5            	sd
-   241a   cb 24 29      	lbnf	DoNextMonth	; jump if substr lng < longest substr lng
-   241d   52            	str	r2
-   241e   f8 00         	ldi	0
-   2420   a8            	plo	r8		; no month name matched
-   2421   02            	ldn	r2
-   2422   c2 24 29      	lbz	DoNextMonth	; jump if substr lng = longest substr lng
-   2425   8b            	glo	rb
-   2426   a8            	plo	r8		; save month name index matched
-   2427   8c            	glo	rc
-   2428   a7            	plo	r7		; save longest length matched
+   244c   8c            	glo	rc		; substr length
+   244d   52            	str	r2		; store it for a moment
+   244e   87            	glo	r7
+   244f   f5            	sd
+   2450   cb 24 5f      	lbnf	DoNextMonth	; jump if substr lng < longest substr lng
+   2453   52            	str	r2
+   2454   f8 00         	ldi	0
+   2456   a8            	plo	r8		; no month name matched
+   2457   02            	ldn	r2
+   2458   c2 24 5f      	lbz	DoNextMonth	; jump if substr lng = longest substr lng
+   245b   8b            	glo	rb
+   245c   a8            	plo	r8		; save month name index matched
+   245d   8c            	glo	rc
+   245e   a7            	plo	r7		; save longest length matched
                         DoNextMonth:
-   2429   2b            	dec	rb
-   242a   8b            	glo	rb
-   242b   ca 23 e1      	lbnz	MonthLoop
-   242e   88            	glo	r8
-   242f   d5            	retn
+   245f   2b            	dec	rb
+   2460   8b            	glo	rb
+   2461   ca 24 17      	lbnz	MonthLoop
+   2464   88            	glo	r8
+   2465   d5            	retn
                         ;------------------------
                         MonthNames:
-   2430   0c            	db	12
-   2431   44 65 63 65   	dc	'December'
-   2435   6d 62 65 f2   
-   2439   4e 6f 76 65   	dc	'November'
-   243d   6d 62 65 f2   
-   2441   4f 63 74 6f   	dc	'October'
-   2445   62 65 f2      
-   2448   53 65 70 74   	dc	'September'
-   244c   65 6d 62 65   
-   2450   f2            
-   2451   41 75 67 75   	dc	'August'
-   2455   73 f4         
-   2457   4a 75 6c f9   	dc	'July'
-   245b   4a 75 6e e5   	dc	'June'
-   245f   4d 61 f9      	dc	'May'
-   2462   41 70 72 69   	dc	'April'
-   2466   ec            
-   2467   4d 61 72 63   	dc	'March'
-   246b   e8            
-   246c   46 65 62 72   	dc	'February'
-   2470   75 61 72 f9   
-   2474   4a 61 6e 75   	dc	'January'
-   2478   61 72 f9      
-   247b   ff            	db	0ffh
+   2466   0c            	db	12
+   2467   44 65 63 65   	dc	'December'
+   246b   6d 62 65 f2   
+   246f   4e 6f 76 65   	dc	'November'
+   2473   6d 62 65 f2   
+   2477   4f 63 74 6f   	dc	'October'
+   247b   62 65 f2      
+   247e   53 65 70 74   	dc	'September'
+   2482   65 6d 62 65   
+   2486   f2            
+   2487   41 75 67 75   	dc	'August'
+   248b   73 f4         
+   248d   4a 75 6c f9   	dc	'July'
+   2491   4a 75 6e e5   	dc	'June'
+   2495   4d 61 f9      	dc	'May'
+   2498   41 70 72 69   	dc	'April'
+   249c   ec            
+   249d   4d 61 72 63   	dc	'March'
+   24a1   e8            
+   24a2   46 65 62 72   	dc	'February'
+   24a6   75 61 72 f9   
+   24aa   4a 61 6e 75   	dc	'January'
+   24ae   61 72 f9      
+   24b1   ff            	db	0ffh
                         ;------------------------
                         ; prtTblStr: print n'th string in a table (end of string marked with hi bit set)
                         ; IN: D = string number (0..N-1)
@@ -845,136 +895,137 @@
                         ;               (table terminated by 0FFH)
                         ;
                         prtTblStr:
-   247c   ad            	plo	rd
-   247d   ef            	sex	rf
-   247e   f7            	sm				; exceeds # of strings in table?
-   247f   e2            	sex	r2
-   2480   cb 24 84      	lbnf	prtts1	
-   2483   d5            	retn				; yep, we are done
+   24b2   ad            	plo	rd
+   24b3   ef            	sex	rf
+   24b4   f7            	sm				; exceeds # of strings in table?
+   24b5   e2            	sex	r2
+   24b6   cb 24 ba      	lbnf	prtts1	
+   24b9   d5            	retn				; yep, we are done
                         prtts1:	
-   2484   8d            	glo	rd
-   2485   c2 24 94      	lbz	FirstStr
+   24ba   8d            	glo	rd
+   24bb   c2 24 ca      	lbz	FirstStr
                         NextStr:
-   2488   1f            	inc	rf
-   2489   0f            	ldn	rf
-   248a   fa 80         	ani	80h
-   248c   c2 24 88      	lbz	NextStr			; not end of this string
-   248f   2d            	dec	rd
-   2490   8d            	glo	rd
-   2491   ca 24 88      	lbnz	NextStr			; got to the string we want yet?
+   24be   1f            	inc	rf
+   24bf   0f            	ldn	rf
+   24c0   fa 80         	ani	80h
+   24c2   c2 24 be      	lbz	NextStr			; not end of this string
+   24c5   2d            	dec	rd
+   24c6   8d            	glo	rd
+   24c7   ca 24 be      	lbnz	NextStr			; got to the string we want yet?
                         FirstStr:
-   2494   f8 17         	ldi	23			; total spaces
-   2496   ad            	plo	rd
+   24ca   f8 17         	ldi	23			; total spaces
+   24cc   ad            	plo	rd
                         StrLoop:
-   2497   1f            	inc	rf
-   2498   0f            	ldn	rf
-   2499   fa 7f         	ani	7fh			; mask off hi bit
-   249b   d4 03 30      	call	O_TYPE
-   249e   2d            	dec	rd			; decr # spaces required
-   249f   0f            	ldn	rf
-   24a0   fe            	shl				; put msb in DF
-   24a1   cb 24 97      	lbnf	StrLoop			; loop until last char (hi bit set)
+   24cd   1f            	inc	rf
+   24ce   0f            	ldn	rf
+   24cf   fa 7f         	ani	7fh			; mask off hi bit
+   24d1   d4 03 30      	call	O_TYPE
+   24d4   2d            	dec	rd			; decr # spaces required
+   24d5   0f            	ldn	rf
+   24d6   fe            	shl				; put msb in DF
+   24d7   cb 24 cd      	lbnf	StrLoop			; loop until last char (hi bit set)
                         StrSpaces:
-   24a4   f8 20         	ldi	' '			; fill out to 23 chars with spaces
-   24a6   d4 03 30      	call	O_TYPE
-   24a9   2d            	dec	rd
-   24aa   8d            	glo	rd
-   24ab   ca 24 a4      	lbnz	StrSpaces
-   24ae   d5            	retn
+   24da   f8 20         	ldi	' '			; fill out to 23 chars with spaces
+   24dc   d4 03 30      	call	O_TYPE
+   24df   2d            	dec	rd
+   24e0   8d            	glo	rd
+   24e1   ca 24 da      	lbnz	StrSpaces
+   24e4   d5            	retn
                         ;------------------------
-   24af   d4 ff 81      HasRTC:	call	f_getdev		; check that the BIOS thinks
-   24b2   8f            	glo	rf
-   24b3   fa 10         	ani	b_devRTC		; we have an RTC
-   24b5   32 ba         	bz	NoRTC
-   24b7   7f 00         	smbi	0			; signal RTC present (DF=1)
-   24b9   d5            	retn				; and return
-   24ba   fc 00         NoRTC:	adi	0			; clear DF
-   24bc   d5            	retn				; and return
+   24e5   d4 ff 81      HasRTC:	call	f_getdev		; check that the BIOS thinks
+   24e8   8f            	glo	rf
+   24e9   fa 10         	ani	b_devRTC		; we have an RTC
+   24eb   32 f0         	bz	NoRTC
+   24ed   7f 00         	smbi	0			; signal RTC present (DF=1)
+   24ef   d5            	retn				; and return
+   24f0   fc 00         NoRTC:	adi	0			; clear DF
+   24f2   d5            	retn				; and return
                         ;------------------------
                         ;	
+                        HasClock:	 ds	1
+                        ;
+                        DOW1st:		ds	1		;\.
+                        DateBlk:				; \.
+                        Month:		ds	1		;  \.
+                        Day:		ds	1		; NB: these variables must
+                        Year:		ds	2		; remain together in this
+                        Date2Blk:				; order!
+                        Month2:		ds	1		;  /.
+                        Day2:		ds	1		; /.
+                        Year2:		ds	2		;/.
+                        ;
+                        		ds	64
+                        localStack:	ds	1
+                        saveStack:	ds	2
+                        ;
+                        buffer:		ds	80
+                        ;
                         endrom	equ	$
                         ;
                         ;------------------------
                         ;
-                        HasClock ds	1
-                        ;
-                        DOW1st	ds	1			;\
-                        DateBlk:				; \
-                        Month	ds	1			;  \
-                        Day	ds	1			; NB: these variables must
-                        Year	ds	2			; remain together in this
-                        Date2Blk:				; order!
-                        Month2	ds	1			;  /
-                        Day2	ds	1			; /
-                        Year2	ds	2			;/
-                        ;
-                        	ds	64
-                        localStack:
-                        	ds	1
-                        saveStack:
-                        	ds	2
-                        ;
-                        buffer	equ	$
-                        ;
                         	end
-2356  ansi_hilite    235b  ansi_normal    0004  b_devBBSER    0002  b_devFLPY 
-0001  b_devIDE      0020  b_devNVR      0010  b_devRTC      0008  b_devUART 
-0007  bell          ff00  BIOS          0008  bs            250a  buffer    
-2006  build         23e8  ChkNextChr    000d  cr            2368  crlf      
-2002  date          24c3  Date2Blk      24bf  DateBlk       24c0  Day       
-24c4  Day2          22a2  DaysInMonth    2429  DoNextMonth    216b  DoTail    
-2179  DoTailX       24be  DOW1st        21a8  DoYear        21d0  DoYear1   
-f800  EBIOS         24bd  endrom        0005  errdirnotempty    0001  errexists 
-0003  errinvdir     0004  errisdir      0002  errnoffnd     0006  errnotexec
-001b  esc           20ec  Exit          f830  f_astodt      f833  f_astotm  
-ff5d  f_atoi        ff00  f_boot        ff42  f_bootide     f800  f_bread   
-ff6c  f_brktest     f806  f_btest       f803  f_btype       ff33  f_div16   
-ff2a  f_drive       f827  f_dttoas      ff6f  f_findtkn     ff57  f_freemem 
-ff81  f_getdev      f815  f_gettod      ff45  f_hexin       ff48  f_hexout2 
-ff4b  f_hexout4     f824  f_ideid       ff3c  f_ideread     ff36  f_idereset
-f821  f_idesize     ff39  f_idewrite    ff7b  f_idnum       ff3f  f_initcall
-ff66  f_inmsg       ff0f  f_input       ff69  f_inputl      ff63  f_intout  
-ff78  f_isalnum     ff72  f_isalpha     ff75  f_ishex       ff5a  f_isnum   
-ff7e  f_isterm      ff15  f_ltrim       ff1b  f_memcpy      ff54  f_minimon 
-ff51  f_mover       ff09  f_msg         ff30  f_mul16       f836  f_nvrcchk 
-f81b  f_rdnvr       ff21  f_rdsec       ff06  f_read        f82d  f_rtctest 
-ff27  f_seek        ff24  f_seek0       ff2d  f_setbd       f818  f_settod  
-ff12  f_strcmp      ff18  f_strcpy      f82a  f_tmtoas      ff4e  f_tty     
-ff03  f_type        ff0c  f_typex       ff60  f_uintout     f80c  f_uread   
-f812  f_usetbd      f80f  f_utest       f809  f_utype       fff9  f_version 
-f81e  f_wrnvr       ff1e  f_wrtsec      2409  FindEoS       2494  FirstStr  
-22cd  FullWeek      21df  FullYear      236f  GetDOW        237c  GetDOW1   
-23bb  GetDOW2       23c0  GetDOW3       2157  GotTime       230a  Gt10      
-24bd  HasClock      24af  HasRTC        202b  Help          208b  Help2     
-22fc  hilite_day    03f6  I_SERVE       0406  K_BDAY        0405  K_BMONTH  
+238c  ansi_hilite    2391  ansi_normal    0004  b_devBBSER    0002  b_devFLPY 
+0001  b_devIDE      0001  b_devNBREAD    0020  b_devNVR      0010  b_devRTC  
+0008  b_devUART     0007  bell          ff00  BIOS          0008  bs        
+2540  buffer        2006  build         241e  ChkNextChr    000d  cr        
+239e  crlf          2002  date          24f9  Date2Blk      24f5  DateBlk   
+24f6  Day           24fa  Day2          22d8  DaysInMonth    245f  DoNextMonth
+21a1  DoTail        21af  DoTailX       24f4  DOW1st        21de  DoYear    
+2206  DoYear1       f800  EBIOS         2590  endrom        0005  errdirnotempty
+0001  errexists     0003  errinvdir     0004  errisdir      0002  errnoffnd 
+0006  errnotexec    001b  esc           20f1  Exit          210f  Exit2     
+f830  f_astodt      f833  f_astotm      ff5d  f_atoi        ff00  f_boot    
+ff42  f_bootide     f800  f_bread       ff6c  f_brktest     f806  f_btest   
+f803  f_btype       ff33  f_div16       ff2a  f_drive       f827  f_dttoas  
+ff6f  f_findtkn     ff57  f_freemem     ff81  f_getdev      f815  f_gettod  
+ff45  f_hexin       ff48  f_hexout2     ff4b  f_hexout4     f824  f_ideid   
+ff3c  f_ideread     ff36  f_idereset    f821  f_idesize     ff39  f_idewrite
+ff7b  f_idnum       ff3f  f_initcall    ff66  f_inmsg       ff0f  f_input   
+ff69  f_inputl      ff63  f_intout      ff78  f_isalnum     ff72  f_isalpha 
+ff75  f_ishex       ff5a  f_isnum       ff7e  f_isterm      ff15  f_ltrim   
+ff1b  f_memcpy      ff54  f_minimon     ff51  f_mover       ff09  f_msg     
+ff30  f_mul16       ff54  f_nbread      f836  f_nvrcchk     f81b  f_rdnvr   
+ff21  f_rdsec       ff06  f_read        f82d  f_rtctest     ff27  f_seek    
+ff24  f_seek0       ff2d  f_setbd       f818  f_settod      ff12  f_strcmp  
+ff18  f_strcpy      f82a  f_tmtoas      ff4e  f_tty         ff03  f_type    
+ff0c  f_typex       ff60  f_uintout     f80c  f_uread       f812  f_usetbd  
+f80f  f_utest       f809  f_utype       fff9  f_version     f81e  f_wrnvr   
+ff1e  f_wrtsec      0010  ff_archive    0001  ff_dir        0002  ff_exec   
+0008  ff_hide       0004  ff_write      243f  FindEoS       24ca  FirstStr  
+2303  FullWeek      2215  FullYear      23a5  GetDOW        23b2  GetDOW1   
+23f1  GetDOW2       23f6  GetDOW3       218d  GotTime       2340  Gt10      
+24f3  HasClock      24e5  HasRTC        2030  Help          2090  Help2     
+2332  hilite_day    03f6  I_SERVE       0406  K_BDAY        0405  K_BMONTH  
 0403  K_BUILD       0407  K_BYEAR       0470  K_CLKFREQ     0476  K_DAY     
-044d  K_HEAP        0442  K_HIMEM       0478  K_HOUR        0479  K_MINUTE  
-0475  K_MONTH       047b  K_SECDEN      047d  K_SECNUM      047a  K_SECOND  
-0400  K_VER         0477  K_YEAR        22d9  LeadingSpace    000a  lf        
-2507  localStack    20f7  Main          23d4  MatchMonthName    2199  MonName   
-24bf  Month         24c3  Month2        23e1  MonthLoop     2430  MonthNames
-22bc  MoveFirst     2291  NextMonth     2488  NextStr       2118  NoClk     
-2146  NoClkMsg      2342  normal_day    24ba  NoRTC         23f3  NotLower  
-22ff  NotToday1     2345  NotToday2     036c  O_ALLOC       0004  O_APPND   
-035a  O_BOOT        0366  O_BRKTEST     0324  O_CHDIR       0300  O_CLDBOOT 
-0312  O_CLOSE       0001  O_CREAT       0475  O_DATTIM      036f  O_DEALLOC 
-0318  O_DELETE      0369  O_DEVCTRL     031e  O_EXEC        0342  O_EXECBIN 
-034e  O_GETDEV      0351  O_GETTOD      0363  O_INITCALL    034b  O_INMSG   
-0339  O_INPUT       0357  O_INPUTL      0348  O_KINIT       0321  O_MKDIR   
-0333  O_MSG         0306  O_OPEN        0315  O_OPENDIR     033f  O_PRINT   
-033c  O_PRTSTAT     032a  O_RDLUMP      0309  O_READ        0336  O_READKEY 
-031b  O_RENAME      0327  O_RMDIR       030f  O_SEEK        0360  O_SETBD   
-0345  O_SETDEF      0354  O_SETTOD      0002  O_TRUNC       035d  O_TTY     
-0330  O_TYPE        030c  O_WRITE       032d  O_WRLUMP      0303  O_WRMBOOT 
-247c  prtTblStr     2484  prtts1        0000  r0            0001  r1        
-000a  r10           000b  r11           000c  r12           000d  r13       
-000e  r14           000f  r15           0002  r2            0003  r3        
-0004  r4            0005  r5            0006  r6            0007  r7        
-0008  r8            0009  r9            000a  ra            000b  rb        
-000c  rc            000d  rd            000e  re            000f  rf        
-2508  saveStack     0004  scall         21fa  ShowCal       21a0  SkipRest  
-2125  SkipSpaces    21b0  SkipYearSpaces    0005  sret          2028  Start     
-2497  StrLoop       24a4  StrSpaces     0009  tab           036a  V_DVEC    
-03fd  V_IVEC        23c8  valtab        235f  vt52_hilite    2364  vt52_normal
-22d0  WeekLoop      24c1  Year          24c5  Year2         
+0468  K_HEAP        0442  K_HIMEM       0478  K_HOUR        0465  K_LOWMEM  
+0479  K_MINUTE      0475  K_MONTH       0467  K_RETVAL      047b  K_SECDEN  
+047d  K_SECNUM      047a  K_SECOND      0400  K_VER         0477  K_YEAR    
+230f  LeadingSpace    000a  lf            253d  localStack    2115  Main      
+213e  Main2         240a  MatchMonthName    21cf  MonName       24f5  Month     
+24f9  Month2        2417  MonthLoop     2466  MonthNames    22f2  MoveFirst 
+22c7  NextMonth     24be  NextStr       214e  NoClk         217c  NoClkMsg  
+2378  normal_day    24f0  NoRTC         2429  NotLower      2335  NotToday1 
+237b  NotToday2     036c  O_ALLOC       0004  O_APPND       035a  O_BOOT    
+0366  O_BRKTEST     0324  O_CHDIR       0300  O_CLDBOOT     0312  O_CLOSE   
+0001  O_CREAT       036f  O_DEALLOC     0318  O_DELETE      0369  O_DEVCTRL 
+031e  O_EXEC        0342  O_EXECBIN     034e  O_GETDEV      0351  O_GETTOD  
+0363  O_INITCALL    034b  O_INMSG       0339  O_INPUT       0357  O_INPUTL  
+0348  O_KINIT       0375  O_MEMCTRL     0321  O_MKDIR       0333  O_MSG     
+0306  O_OPEN        0315  O_OPENDIR     033f  O_PRINT       033c  O_PRTSTAT 
+032a  O_RDLUMP      0309  O_READ        0336  O_READKEY     031b  O_RENAME  
+0327  O_RMDIR       030f  O_SEEK        0360  O_SETBD       0345  O_SETDEF  
+0354  O_SETTOD      0372  O_TERMCTRL    0002  O_TRUNC       0330  O_TYPE    
+030c  O_WRITE       032d  O_WRLUMP      0303  O_WRMBOOT     24b2  prtTblStr 
+24ba  prtts1        0000  r0            0001  r1            000a  r10       
+000b  r11           000c  r12           000d  r13           000e  r14       
+000f  r15           0002  r2            0003  r3            0004  r4        
+0005  r5            0006  r6            0007  r7            0008  r8        
+0009  r9            000a  ra            000b  rb            000c  rc        
+000d  rd            000e  re            000f  rf            253e  saveStack 
+0004  scall         2230  ShowCal       21d6  SkipRest      215b  SkipSpaces
+21e6  SkipYearSpaces    0005  sret          202d  Start         24cd  StrLoop   
+24da  StrSpaces     0009  tab           036a  V_DVEC        03fd  V_IVEC    
+23fe  valtab        2395  vt52_hilite    239a  vt52_normal    2306  WeekLoop  
+24f7  Year          24fb  Year2         
 
